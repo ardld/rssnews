@@ -166,16 +166,40 @@ async function fetchAndParseRSS(feedUrl) {
       const description = extractField(/<description>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/description>)/s);
       const pubDate = extractField(/<pubDate>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/pubDate>)/s);
       
+      // Extract thumbnail
+      const enclosureMatch = itemContent.match(/<enclosure\s+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i);
+      const mediaContentMatch = itemContent.match(/<media:content[^>]+url=["']([^"']+)["'][^>]+medium=["']image["']/i);
+      const imgInDescriptionMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
+      
+      let thumbnail = null;
+      if (enclosureMatch) {
+        thumbnail = enclosureMatch[1];
+      } else if (mediaContentMatch) {
+        thumbnail = mediaContentMatch[1];
+      } else if (imgInDescriptionMatch) {
+        thumbnail = imgInDescriptionMatch[1];
+      }
+      
+      // Make relative URLs absolute
+      if (thumbnail && !thumbnail.startsWith('http')) {
+        try {
+          const baseUrl = new URL(feedUrl).origin;
+          thumbnail = new URL(thumbnail, baseUrl).toString();
+        } catch (e) {
+          thumbnail = null;
+        }
+      }
+      
+      const cleanSnippet = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      
       if (title && link) {
-        const cleanSnippet = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        
         items.push({
           title,
           link: canonicalizeUrl(link),
           source: domainOf(link) || new URL(feedUrl).hostname,
           date: pubDate,
           snippet: cleanSnippet,
-          thumbnail: null,
+          thumbnail,
         });
       }
     }
@@ -480,6 +504,11 @@ const CITY_WORDS = [
   "radauti",
 ];
 
+const ELECTION_WORDS = [
+  "alegeri", "alegeri locale", "alegeri parlamentare", "alegeri prezidențiale",
+  "vot", "candidat", "candidați", "campanie electorală"
+];
+
 // --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere")
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
@@ -490,6 +519,14 @@ const GOVERNMENT_ROLE_TOKENS = [
   "premier","vicepremier","secretar de stat",
   "mapn","ministerul apararii","apărării","apararii"
 ];
+
+function looksRomanianArticle(item) {
+  const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
+  return RO_SIGNALS.some(signal => text.includes(signal)) || 
+         text.includes('românia') || text.includes('romania') ||
+         text.includes('bucurești') || text.includes('bucuresti');
+}
+
 function mentionsPowerSignals(item) {
   const t = (`${item.title || ""} ${item.snippet || item.summary || ""}`)
     .toLowerCase()
@@ -551,6 +588,9 @@ const QUERIES = {
     "Camera Deputatilor",
     "Senatul României",
     "Senatul Romaniei",
+    "deputat",
+    "senator",
+    "parlamentar"
   ],
   "putere": [
     "PSD",
@@ -929,7 +969,7 @@ function scoreOwner(allText) {
   const scores = new Map();
   scores.set("presedintie", score(/\bpresedinte|presedintie|cotroceni|nicusor\s+dan\b/g));
   scores.set("guvern", score(/\bpremier|guvern|ministru|ministerul|ministra\b/g));
-  scores.set("parlament", score(/\bparlament|senat|camera\s+deputatilor\b/g));
+  scores.set("parlament", score(/\bparlament|senat|camera\s+deputatilor|deputat|senator|parlamentar\b/g));
   scores.set("putere", score(/\bpsd|pnl|udmr|usr|coalit/g));
   scores.set("opozitie", score(/\baur\b|\bsos\s+romania\b/g));
   scores.set("local", score(/\bprimar|primaria|consiliu\s+jude?tean|cj\b/g));
@@ -1012,7 +1052,8 @@ function crossEntityCollapseURLUnion(entities) {
         if (!byUrl.has(sig)) byUrl.set(sig, it);
       }
     }
-    ownerRef.subject.items = Array.from(byUrl.values()).slice(0, 5);
+    const ownerSubj = entities[ownerRef.eIdx]?.subjects?.[ownerRef.sIdx];
+    if (ownerSubj) ownerSubj.items = Array.from(byUrl.values()).slice(0, 5);
 
     for (const r of bucket) {
       if (r !== ownerRef) toDelete.add(`${r.eIdx}:${r.sIdx}`);
@@ -1221,6 +1262,22 @@ body{
   content:""; position:absolute; left:0; top:0; bottom:0; width:10px;
   background:linear-gradient(180deg,var(--accent) 0%,var(--accent) 100%);
 }
+.card__thumbnail{
+  margin-bottom:12px;
+}
+.card__thumbnail img{
+  max-width:100%;
+  height:auto;
+  display:block;
+  border:2px solid var(--ink);
+  background:#f5f5f5;
+}
+.thumbnail-source{
+  font-size:11px;
+  color:var(--muted);
+  margin-top:4px;
+  font-style:italic;
+}
 .card__t{font:800 24px/1.15 Space Grotesk,Inter,sans-serif;margin:0 0 8px;letter-spacing:-0.01em}
 .sub__sum{font-size:16px;color:var(--muted);margin:8px 0 12px;line-height:1.5}
 .items{margin:0;padding:0;list-style:none}
@@ -1272,8 +1329,19 @@ body{
   border-bottom:2px solid var(--ink);
 }
 
-@media (max-width:900px){
+/* Mobile-friendly improvements */
+@media (max-width: 900px){
+  .wrap{padding:15px}
   .card__t{font-size:20px}
+  .entity__t{font-size:16px}
+}
+
+@media (max-width: 600px){
+  .card__t{font-size:18px;line-height:1.2}
+  .sub__sum{font-size:15px}
+  .items li{font-size:13px;flex-direction:column;align-items:flex-start;gap:4px}
+  .items .src{margin-left:0;margin-top:2px}
+  .card__thumbnail img{border-width:1px}
 }
 </style>`;
 }
@@ -1326,8 +1394,16 @@ function generateContentHTML(report, when) {
       
       const sum = s.sumar_ro ? `<p class="sub__sum">${esc(s.sumar_ro)}</p>` : '';
       
+      // Thumbnail with source attribution
+      const thumbnailHtml = s.thumbnail ? 
+        `<div class="card__thumbnail">
+           <img src="${esc(s.thumbnail)}" alt="Thumbnail" loading="lazy">
+           <p class="thumbnail-source">sursa: ${esc(s.thumbnailSource || '')}</p>
+         </div>` : '';
+      
       return `
         <div class="card">
+          ${thumbnailHtml}
           <div class="card__body">
             <h3 class="card__t">${esc(s.titlu_ro || s.label || 'Subiect')}</h3>
             ${sum}
@@ -1413,14 +1489,21 @@ async function buildData() {
       if (subset.length === 0) continue;
 
       const { title, summary } = await titleAndSummaryFor(subset);
+      
+      // Pick thumbnail from first article that has one
+      const thumbnailItem = subset.find(item => item.thumbnail) || subset[0];
+      const thumbnail = thumbnailItem?.thumbnail || null;
+      const thumbnailSource = thumbnailItem?.source || '';
 
       subjects.push({
         label: cl.label || title || `Subiect ${subjects.length + 1}`,
         titlu_ro: title,
         sumar_ro: summary,
         items: subset,
+        thumbnail,
+        thumbnailSource,
       });
-      console.log(`    ✓ Cluster ${idx + 1}: ${subset.length} articles`);
+      console.log(`    ✓ Cluster ${idx + 1}: ${subset.length} articles${thumbnail ? ' (with thumbnail)' : ''}`);
     }
     entities.push({ name, subjects });
   }
