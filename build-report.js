@@ -256,12 +256,12 @@ function localRoleCityPass(item) {
 // --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere")
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
-  "moșteanu", "mosteanu", "liviu-ionut mosteanu", "ionut mosteanu",
+  "grindeanu", "bolojan", "kelemen", "dominic fritz",
 ];
 const GOVERNMENT_ROLE_TOKENS = [
   "ministrul","ministru","ministerul","guvernul",
   "premier","vicepremier","secretar de stat",
-  "mapn","ministerul apararii","apărării","apararii"
+  "premierul","vicepremierul","secretarul de stat",
 ];
 function mentionsPowerSignals(item) {
   const t = (`${item.title || ""} ${item.snippet || item.summary || ""}`)
@@ -312,6 +312,12 @@ const QUERIES = {
     "Camera Deputatilor",
     "Senatul României",
     "Senatul Romaniei",
+    "deputatul",
+    "senatorul",
+    "senatoarea",
+    "deputații",
+    "senatorii",
+    "votul din plen",
   ],
   "Coaliție (Putere)": [
     "PSD",
@@ -325,10 +331,6 @@ const QUERIES = {
     "USR",
     "Uniunea Salvați România",
     "Uniunea Salvati Romania",
-    "Dominic Fritz",
-    "Cătălin Drulă",
-    "Catalin Drula",
-    "Bolojan",
   ],
   "Opoziție": [
     '(AUR OR Alianța pentru Unirea Românilor OR Alianta pentru Unirea Romanilor OR George Simion) -aurora -"de aur" -aurul -gold -prețul -pretul -gram -site:imobiliare.ro -site:storia.ro -site:olx.ro',
@@ -568,12 +570,11 @@ async function gptFilterForEntity(entityName, items) {
   const cacheKey = `filter:${entityName}:${items.length}`;
   return cachedLLMCall(cacheKey, async () => {
     const slim = items.map((it, i) => ({ i, title: it.title, snippet: (it.snippet || "").slice(0, 200) }));
-    const prompt = `FILTRARE ECHILIBRATĂ: Păstrează articolele relevante pentru entitatea "${entityName}" din România, dar fii flexibil.
+    const prompt = `FILTRARE ECHILIBRATĂ: Păstrează articolele relevante pentru entitatea "${entityName}" din România.
 
 CRITERII DE PĂSTRARE:
 - Articolul menționează explicit entitatea sau persoane/instituții cheie din categorie.
 - Articolul este despre acțiuni, declarații sau evenimente cu impact asupra entității.
-- Articolele conexe care oferă context valoros sunt acceptabile, chiar dacă nu sunt direct despre entitate.
 
 CRITERII DE ELIMINARE (STRICTĂ):
 - Elimină DOAR știrile EVIDENT irelevante: reclame, sport, monden, anunțuri imobiliare, sau știri despre alte localități fără legătură.
@@ -615,13 +616,13 @@ IMPORTANT: Folosește DOAR titlul și conținutul real al articolului pentru gru
 - Reclame sau conținut promovat
 - Orice alt zgomot HTML din pagină
 
-Concentrează-te doar pe conținutul articolului principal.
+Concentrează-te doar pe conținutul articolului principal. Este despre același om sau lucru?
 
-Elimină near-duplicate. Întoarce top 3 clustere după diversitate outlet-uri și recență. Pentru fiecare cluster, selectează ≤5 itemi reprezentativi. Răspunde STRICT în JSON, ca o listă de obiecte { "label": string, "indices": number[] } fără alt text.`;
+Elimină near-duplicate. Întoarce top 3 clustere după diversitate outlet-uri și recență. Pentru fiecare cluster, selectează ≤5 itemi pe acela;i subiect. Răspunde STRICT în JSON, ca o listă de obiecte { "label": string, "indices": number[] } fără alt text.`;
 
 const PROMPT_TITLE_SUM = `Instrucțiune: Primești până la 5 articole (titlu, lead, fragment). Scrie un titlu RO scurt, jurnalistic (nu copia niciun headline) și un sumar RO de cel mult 2 propoziții scurte, neutru și bazat pe fapte comune între surse (fără speculații).
 
-IMPORTANT: Folosește doar conținutul real al articolelor. Ignoră titluri similare, link-uri externe, sau zgomot HTML.
+IMPORTANT: Folosește doar conținutul real al articolelor. Ignoră link-uri externe sau zgomot HTML.
 
 FORMAT STRICT:
 
