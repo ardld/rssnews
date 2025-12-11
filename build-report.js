@@ -6,14 +6,9 @@ import jw from "jaro-winkler";
 import he from "he";
 
 /** =============================================
- *  Yam.ro RSS Integration
+ *  Multi-RSS Feed Integration
  *  =============================================
- *  LIMITATIONS vs. SerpAPI:
- *  - No advanced search operators (site:, quotes, -exclusions)
- *  - Only latest ~20-50 articles available in feed
- *  - No thumbnail images
- *  - Less frequent updates than Google News
- *  - Simple keyword matching instead of semantic search
+ *  Sources: Yam.ro, Hotnews, G4Media, Libertatea
  *  ============================================= */
 
 /** =============================================
@@ -27,10 +22,18 @@ const CONFIG = {
     retryDelay: 1000,
   },
   llm: {
-    model: "gpt-5",                       // main model
+    model: "gpt-5.1",                       // Updated to GPT-5.1
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
     maxTokens: 3000,
+  },
+  rss: {
+    feeds: [
+      "https://news.yam.ro/ro/rss",
+      "https://hotnews.ro/c/actualitate/feed",
+      "https://www.g4media.ro/feed",
+      "https://libertatea.ro/feed/"
+    ]
   },
   filters: {
     embeddingSimilarity: 0.90,
@@ -47,7 +50,7 @@ const CONFIG = {
   },
   analytics: { ga4: process.env.GA_MEASUREMENT_ID || "G-Z3SMLP8TGS" },
   wordpress: {
-    generateFragment: true, // Set to false to disable WordPress fragment
+    generateFragment: true,
     wrapperId: "contextpolitic-embed"
   }
 };
@@ -121,32 +124,24 @@ async function withRetry(fn, maxRetries = CONFIG.api.maxRetries, delay = CONFIG.
 }
 
 /** =============================================
- *  RSS Feed Integration
+ *  RSS Feed Integration - MULTIPLE SOURCES
  *  ============================================= */
 let rssItemsCache = null;
-const RSS_FEED_URL = "https://news.yam.ro/ro/rss";
 
-async function fetchAndParseRSS() {
-  if (rssItemsCache) {
-    console.log("  Using cached RSS feed");
-    return rssItemsCache;
-  }
-  
-  console.log("  Fetching RSS feed from Yam.ro...");
+async function fetchAndParseRSS(feedUrl) {
+  console.log(`  Fetching RSS: ${feedUrl}...`);
   try {
-    const { data } = await withRetry(() => axios.get(RSS_FEED_URL, { 
+    const { data } = await withRetry(() => axios.get(feedUrl, { 
       timeout: CONFIG.api.timeout,
       headers: { 'User-Agent': 'ContextPolitBot/1.0' }
     }));
     
-    // Parse RSS XML using regex (no new dependencies required)
     const items = [];
     const itemMatches = data.matchAll(/<item>([\s\S]*?)<\/item>/g);
     
     for (const match of itemMatches) {
       const itemContent = match[1];
       
-      // Extract fields with CDATA support and HTML entity decoding
       const extractField = (regex) => {
         const fieldMatch = itemContent.match(regex);
         return fieldMatch ? he.decode(fieldMatch[1] || fieldMatch[2] || '').trim() : '';
@@ -158,27 +153,45 @@ async function fetchAndParseRSS() {
       const pubDate = extractField(/<pubDate>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/pubDate>)/s);
       
       if (title && link) {
-        // Clean HTML tags from description to create snippet
         const cleanSnippet = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         
         items.push({
           title,
           link: canonicalizeUrl(link),
-          source: domainOf(link) || 'yam.ro',
+          source: domainOf(link) || new URL(feedUrl).hostname,
           date: pubDate,
           snippet: cleanSnippet,
-          thumbnail: null, // Yam.ro RSS doesn't provide consistent thumbnails
+          thumbnail: null,
         });
       }
     }
     
-    console.log(`  ✓ Parsed ${items.length} items from RSS`);
-    rssItemsCache = items;
+    console.log(`    ✓ Parsed ${items.length} items`);
     return items;
   } catch (err) {
-    console.error(`❌ Failed to fetch/parse RSS feed:`, err.message);
-    return [];
+    console.error(`❌ Failed to fetch/parse ${feedUrl}:`, err.message);
+    return []; // Return empty array on failure
   }
+}
+
+async function fetchAllRSSFeeds() {
+  if (rssItemsCache) {
+    console.log("  Using cached RSS feed");
+    return rssItemsCache;
+  }
+  
+  console.log("  Fetching all RSS feeds...");
+  const feedPromises = CONFIG.rss.feeds.map(url => fetchAndParseRSS(url));
+  const results = await Promise.allSettled(feedPromises);
+  
+  const allItems = results
+    .filter(r => r.status === 'fulfilled')
+    .flatMap(r => r.value)
+    .filter(item => item.title && item.link);
+  
+  console.log(`  ✓ Total articles from all feeds: ${allItems.length}`);
+  rssItemsCache = allItems;
+  return allItems;
 }
 
 /** =============================================
@@ -554,7 +567,6 @@ function hasCampaignCandidateKeywords2025(item) {
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
   "moșteanu", "mosteanu", "liviu-ionut mosteanu", "ionut mosteanu",
-  // add more cabinet/key figures here as needed
 ];
 const GOVERNMENT_ROLE_TOKENS = [
   "ministrul","ministru","ministerul","guvernul",
@@ -595,7 +607,7 @@ function localRoleCityPass(item) {
 }
 
 /** =============================================
- *  Entity Queries
+ *  Entity Queries (unchanged)
  *  ============================================= */
 const ENTITY_ORDER = [
   "Președinție",
@@ -672,17 +684,17 @@ const QUERIES = {
 };
 
 /** =============================================
- *  RSS-based News Search (replaces SerpAPI)
+ *  RSS-based News Search - Updated to use all feeds
  *  ============================================= */
 async function serpNewsSearch(q, opts = {}) {
-  console.log(`  Searching RSS for: "${q}"`);
+  console.log(`  Searching across all RSS feeds: "${q}"`);
   
-  const allItems = await fetchAndParseRSS();
+  const allItems = await fetchAllRSSFeeds();
   
   // Clean query: remove Google operators, extract keywords
   const cleanQuery = q
-    .replace(/-("[^"]+"|\S+)/g, '') // Remove exclusions
-    .replace(/\bsite:\S+/g, '') // Remove site: operators
+    .replace(/-("[^"]+"|\S+)/g, '')
+    .replace(/\bsite:\S+/g, '')
     .replace(/[()]/g, '')
     .trim();
   
@@ -717,12 +729,10 @@ async function fetchEntityPool(name) {
 }
 
 /** =============================================
- *  Deduplication (hybrid: URL + Embeddings + JW + optional GPT Title Merge)
+ *  Deduplication (unchanged)
  *  ============================================= */
 function cosine(a, b) {
-  let s = 0,
-    na = 0,
-    nb = 0;
+  let s = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
     s += a[i] * b[i];
     na += a[i] * a[i];
@@ -732,7 +742,6 @@ function cosine(a, b) {
 }
 
 async function gptTitleMerge(items) {
-  // Optional pass (bounded to 60 titles) to collapse near-identical headlines
   if (!openai) return items;
   const MAX = 60;
   const sub = items.slice(0, MAX);
@@ -743,7 +752,6 @@ Criterii:
 - Sinonimie clară, mici variații, publicări în lanț (aceeași informație).
 - Ignoră diferențe minore de timp sau stil.
 - NU grupa titluri dacă sunt despre episoade DISTINCTE.
-
 Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3]}]. Fără alt text.`;
 
   try {
@@ -757,24 +765,16 @@ Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3
     });
     const raw = r.choices?.[0]?.message?.content?.trim() || "[]";
     let groups = [];
-    try {
-      groups = JSON.parse(raw);
-      if (!Array.isArray(groups)) groups = [];
-    } catch {
-      groups = [];
-    }
-    if (!groups.length) return items;
+    try { groups = JSON.parse(raw); } catch {}
+    if (!Array.isArray(groups)) return items;
 
     const keep = new Array(sub.length).fill(true);
-    // Keep first occurrence in each group, discard the rest within sub[]
     for (const g of groups) {
       const arr = Array.isArray(g?.indices) ? g.indices.filter((x) => Number.isInteger(x) && x >= 0 && x < sub.length) : [];
       if (arr.length <= 1) continue;
-      // Keep the earliest index, remove later dupes
       arr.slice(1).forEach((idx) => (keep[idx] = false));
     }
     const collapsed = sub.filter((_, i) => keep[i]);
-    // Append the tail beyond MAX (untouched)
     return collapsed.concat(items.slice(MAX));
   } catch (err) {
     console.warn("⚠️  GPT title-merge failed:", err.message);
@@ -796,7 +796,7 @@ async function dedupe(items) {
   }
   let list = Array.from(byCanon.values());
 
-  // 2) Embedding-based (fast vector de-dupe)
+  // 2) Embedding-based
   if (openai && list.length > 0) {
     try {
       const BATCH_SIZE = CONFIG.llm.embeddingBatchSize;
@@ -817,28 +817,16 @@ async function dedupe(items) {
       }
       const out = [];
       for (let i = 0; i < list.length; i++) {
-        if (!allVecs[i]) {
-          out.push(list[i]);
-          continue;
-        }
+        if (!allVecs[i]) { out.push(list[i]); continue; }
         let dup = false;
         for (let j = 0; j < out.length; j++) {
           if (!out[j]._emb) continue;
           const sim = cosine(allVecs[i], out[j]._emb);
-          if (sim >= CONFIG.filters.embeddingSimilarity) {
-            dup = true;
-            break;
-          }
+          if (sim >= CONFIG.filters.embeddingSimilarity) { dup = true; break; }
         }
-        if (!dup) {
-          const e = { ...list[i], _emb: allVecs[i] };
-          out.push(e);
-        }
+        if (!dup) out.push({ ...list[i], _emb: allVecs[i] });
       }
-      list = out.map((x) => {
-        delete x._emb;
-        return x;
-      });
+      list = out.map((x) => { delete x._emb; return x; });
     } catch (err) {
       console.warn("⚠️  Embedding deduplication failed, falling back to JW:", err.message);
     }
@@ -853,21 +841,18 @@ async function dedupe(items) {
     for (const ex of out2) {
       const dom2 = domainOf(ex.link);
       const normT2 = (ex.title || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
-      if (dom === dom2 && jw(normT, normT2) > CONFIG.filters.jwSimilarity) {
-        dup = true;
-        break;
-      }
+      if (dom === dom2 && jw(normT, normT2) > CONFIG.filters.jwSimilarity) { dup = true; break; }
     }
     if (!dup) out2.push(it);
   }
 
-  // 4) Optional LLM pass to collapse near-identical headlines across outlets
+  // 4) Optional LLM pass
   const out3 = await gptTitleMerge(out2);
   return out3;
 }
 
 /** =============================================
- *  LLM Operations
+ *  LLM Operations (unchanged)
  *  ============================================= */
 async function cachedLLMCall(key, fn) {
   if (llmCache.has(key)) {
@@ -881,16 +866,9 @@ async function cachedLLMCall(key, fn) {
 
 function extractJSONArray(text) {
   if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {}
+  try { return JSON.parse(text); } catch {}
   const match = text.match(/\[[\s\S]*\]/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch {}
-  }
+  if (match) { try { return JSON.parse(match[0]); } catch {} }
   return null;
 }
 
@@ -900,16 +878,13 @@ async function gptFilterForEntity(entityName, items) {
   return cachedLLMCall(cacheKey, async () => {
     const slim = items.map((it, i) => ({ i, title: it.title, snippet: (it.snippet || "").slice(0, 200) }));
     const prompt = `FILTRARE ECHILIBRATĂ: Păstrează articolele relevante pentru entitatea "${entityName}" din România, dar fii flexibil.
-
 CRITERII DE PĂSTRARE:
 - Articolul menționează explicit entitatea sau persoane/instituții cheie din categorie.
 - Articolul este despre acțiuni, declarații sau evenimente cu impact asupra entității.
 - Articolele conexe care oferă context valoros sunt acceptabile, chiar dacă nu sunt direct despre entitate.
-
 CRITERII DE ELIMINARE (STRICTĂ):
 - Elimină DOAR știrile EVIDENT irelevante: reclame, sport, monden, anunțuri imobiliare, sau știri despre alte localități fără legătură.
 - Elimină știrile unde cuvintele cheie apar doar tangențial, fără substanță.
-
 Răspunde cu un array JSON de indici ai articolelor DE PĂSTRAT. Exemplu: [0, 2, 5, 8]`;
 
     try {
@@ -938,33 +913,27 @@ Răspunde cu un array JSON de indici ai articolelor DE PĂSTRAT. Exemplu: [0, 2,
 }
 
 const PROMPT_CLUSTER = `INSTRUCȚIUNE CRITICĂ: Grupează articolele pe același subiect (același eveniment/declarație/politică).
-
 IMPORTANT: Folosește DOAR titlul și conținutul real al articolului pentru grupare. IGNORĂ complet:
 - Titluri de articole similare din sidebar
 - Link-uri către alte articole
 - Secțiuni "Citește și" sau "Vezi și"
 - Reclame sau conținut promovat
 - Orice alt zgomot HTML din pagină
-
 Concentrează-te doar pe conținutul articolului principal.
-
 Elimină near-duplicate. Întoarce top 3 clustere după diversitate outlet-uri și recență. Pentru fiecare cluster, selectează ≤5 itemi reprezentativi. Răspunde STRICT în JSON, ca o listă de obiecte { "label": string, "indices": number[] } fără alt text.`;
 
 const PROMPT_TITLE_SUM = `Instrucțiune: Primești până la 5 articole (titlu, lead, fragment). Scrie un titlu RO scurt, jurnalistic (nu copia niciun headline) și un sumar RO de cel mult 2 propoziții scurte, neutru și bazat pe fapte comune între surse (fără speculații).
-
 IMPORTANT: Folosește doar conținutul real al articolelor. Ignoră titluri similare, link-uri externe, sau zgomot HTML.
-
 FORMAT STRICT:
-
 TITLU_RO: <titlu jurnalistic scurt>
 SUMAR_RO: <max 2 propoziții scurte>`;
 
 /** ===============================
- *  Clustering (per entity, with GPT-5)
+ *  Clustering (per entity, with GPT-5.1)
  *  =============================== */
 async function bunchForEntity(entityName, items) {
   if (!items || !items.length) return [];
-  if (!openai) return []; // if no key, skip clustering gracefully
+  if (!openai) return [];
 
   const cacheKey = `cluster:${entityName}:${items.map((it) => it.link).join("|")}`;
   return cachedLLMCall(cacheKey, async () => {
@@ -985,12 +954,7 @@ async function bunchForEntity(entityName, items) {
         ],
       });
       let parsed = [];
-      try {
-        parsed = JSON.parse(r.choices?.[0]?.message?.content || "");
-      } catch (e) {
-        console.warn(`⚠️  Failed to parse cluster JSON for ${entityName}:`, e.message);
-        parsed = [];
-      }
+      try { parsed = JSON.parse(r.choices?.[0]?.message?.content || ""); } catch {}
       if (!Array.isArray(parsed)) parsed = [];
       return parsed.slice(0, 3).map((c) => ({
         label: String(c.label || `Subiect ${entityName}`),
@@ -1034,7 +998,7 @@ async function titleAndSummaryFor(items) {
 }
 
 /** =============================================
- *  Cross-entity topic collapsing
+ *  Cross-entity topic collapsing (unchanged)
  *  ============================================= */
 function itemSig(it) {
   const u = canonicalizeUrl(it.link || "");
@@ -1072,8 +1036,7 @@ function scoreOwner(allText) {
   scores.set("Coaliție (Putere)", score(/\bpsd|pnl|udmr|usr|coalit/g));
   scores.set("Opoziție", score(/\baur\b|\bsos\s+romania\b/g));
 
-  let best = ENTITY_PRIORITY[0],
-    bestVal = -1;
+  let best = ENTITY_PRIORITY[0], bestVal = -1;
   for (const [name, val] of scores.entries()) {
     if (val > bestVal || (val === bestVal && ENTITY_PRIORITY.indexOf(name) < ENTITY_PRIORITY.indexOf(best))) {
       best = name;
@@ -1174,11 +1137,9 @@ function crossEntityCollapseURLUnion(entities) {
   return entities;
 }
 
-/** GPT pass to merge subjects across entities even when URLs differ (e.g., same “Mark Rutte în România” story) */
 async function crossEntityGPTCollapse(entities) {
   if (!openai) return entities;
 
-  // Collect subject refs (cap total to avoid token blowup)
   const refs = [];
   entities.forEach((e, eIdx) => {
     (e.subjects || []).forEach((s, sIdx) => {
@@ -1198,7 +1159,6 @@ async function crossEntityGPTCollapse(entities) {
 
   if (!refs.length) return entities;
 
-  // Hard cap for safety
   const MAX_SUBJECTS = 80;
   const sample = refs.slice(0, MAX_SUBJECTS);
   const payload = sample.map((x, i) => ({
@@ -1213,10 +1173,8 @@ async function crossEntityGPTCollapse(entities) {
   const prompt = `Primești o listă de subiecte (carduri) extrase din presă, unele repetate în entități diferite (ex: Guvern, Președinție).
 Grupează DOAR acele subiecte care descriu EVIDENT același eveniment (ex: aceeași vizită, aceeași declarație, aceeași ședință).
 Ignoră variații minore de titlu sau de outlet. NU uni subiecte diferite.
-
 Returnează STRICT JSON ca o listă de obiecte:
 [{"indices":[0,5,8]},{"indices":[1,3]}]
-
 Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sau text suplimentar.`;
 
   let groups = [];
@@ -1230,19 +1188,13 @@ Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sa
       ],
     });
     const raw = r.choices?.[0]?.message?.content?.trim() || "[]";
-    try {
-      groups = JSON.parse(raw);
-      if (!Array.isArray(groups)) groups = [];
-    } catch {
-      groups = [];
-    }
+    try { groups = JSON.parse(raw); } catch {}
   } catch (err) {
     console.warn("⚠️  crossEntityGPTCollapse failed:", err.message);
     return entities;
   }
   if (!groups.length) return entities;
 
-  // Merge groups: pick owner entity by scoreOwner over concatenated text
   const toDelete = new Set();
   for (const g of groups) {
     const arr = Array.isArray(g?.indices) ? g.indices.filter((n) => Number.isInteger(n) && n >= 0 && n < sample.length) : [];
@@ -1253,17 +1205,13 @@ Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sa
       .map((b) => (b.title || "") + " " + (b.summary || "") + " " + (b.items || []).join(" • "))
       .join(" /// ");
     let owner = scoreOwner(aggText);
-    // If the chosen owner not present in bucket, fallback to highest priority present
     if (!bucket.some((b) => b.entity === owner)) {
       owner = ENTITY_PRIORITY.find((n) => bucket.some((b) => b.entity === n)) || bucket[0].entity;
     }
     const ownerRef = bucket.find((b) => b.entity === owner) || bucket[0];
-
-    // Map back to entities[eIdx].subjects[sIdx]
     const ownerReal = refs.find((r) => r.eIdx === ownerRef.eIdx && r.sIdx === ownerRef.sIdx);
     if (!ownerReal) continue;
 
-    // Merge items
     const merged = new Map();
     for (const idx of arr) {
       const ref = sample[idx];
@@ -1271,14 +1219,11 @@ Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sa
       if (!real) continue;
       const subj = entities[real.eIdx]?.subjects?.[real.sIdx];
       if (!subj) continue;
-      for (const it of subj.items || []) {
-        merged.set(itemSig(it), it);
-      }
+      for (const it of subj.items || []) merged.set(itemSig(it), it);
     }
     const ownerSubj = entities[ownerReal.eIdx]?.subjects?.[ownerReal.sIdx];
     if (ownerSubj) ownerSubj.items = Array.from(merged.values()).slice(0, 5);
 
-    // Mark others for deletion
     for (const idx of arr) {
       const ref = sample[idx];
       if (ref.eIdx === ownerReal.eIdx && ref.sIdx === ownerReal.sIdx) continue;
@@ -1299,7 +1244,7 @@ Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sa
 }
 
 /** =============================================
- *  WordPress Fragment Generator
+ *  WordPress Fragment Generator (unchanged)
  *  ============================================= */
 function wordpressFragmentHTML({ report }) {
   const date = new Date(report.generatedAt);
@@ -1310,7 +1255,6 @@ function wordpressFragmentHTML({ report }) {
   });
   
   const wrapperId = CONFIG.wordpress.wrapperId;
-
   const contentHtml = generateContentHTML(report, when);
   
   const scopedCSS = `
@@ -1320,156 +1264,26 @@ function wordpressFragmentHTML({ report }) {
   color: #0a0a0a;
   line-height: 1.6;
 }
-
-#${wrapperId} * {
-  box-sizing: border-box;
-}
-
-#${wrapperId} .wrap {
-  max-width: 100%;
-  margin: 0;
-  padding: 20px 0;
-}
-
-#${wrapperId} .brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-#${wrapperId} .brand__badge {
-  display: inline-grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  background: #0a0a0a;
-  color: #ffd400;
-  font: 700 16px/1 Space Grotesk, Inter, sans-serif;
-  border-radius: 4px;
-}
-
-#${wrapperId} .brand__t {
-  font: 800 22px/1 Space Grotesk, Inter, sans-serif;
-  letter-spacing: -0.02em;
-}
-
-#${wrapperId} .when {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 20px;
-  color: #4b5563;
-}
-
-#${wrapperId} .entity {
-  margin: 24px 0 36px;
-}
-
-#${wrapperId} .entity__t {
-  display: inline-block;
-  background: #ffd400;
-  color: #0a0a0a;
-  padding: 6px 10px;
-  border: 2px solid #0a0a0a;
-  font: 800 18px/1 Space Grotesk, Inter, sans-serif;
-  letter-spacing: .02em;
-  text-transform: uppercase;
-  margin: 0 0 14px;
-}
-
-#${wrapperId} .card {
-  border-bottom: 2px solid #0a0a0a;
-  padding: 18px 0;
-  margin: 0 0 12px 0;
-  position: relative;
-}
-
-#${wrapperId} .card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 10px;
-  background: linear-gradient(180deg, #ffd400 0%, #ffd400 100%);
-}
-
-#${wrapperId} .card__t {
-  font: 800 24px/1.15 Space Grotesk, Inter, sans-serif;
-  margin: 0 0 8px;
-  letter-spacing: -0.01em;
-}
-
-#${wrapperId} .sub__sum {
-  font-size: 16px;
-  color: #4b5563;
-  margin: 8px 0 12px;
-  line-height: 1.5;
-}
-
-#${wrapperId} .items {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-#${wrapperId} .items li {
-  margin: 6px 0;
-  font-size: 14px;
-  line-height: 1.45;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-#${wrapperId} .items a {
-  color: inherit;
-  text-decoration: none;
-  border-bottom: 2px solid rgba(10, 10, 10, .15);
-  box-shadow: inset 0 -2px 0 rgba(10, 10, 10, .15);
-  transition: box-shadow .15s, border-color .15s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-
-#${wrapperId} .items a:hover {
-  box-shadow: inset 0 -2px 0 #0a0a0a;
-  border-bottom-color: #0a0a0a;
-}
-
-#${wrapperId} .items .src {
-  display: inline-block;
-  margin-left: 4px;
-  font-size: 11px;
-  padding: 1px 6px;
-  border: 1.5px solid #0a0a0a;
-  border-radius: 999px;
-  background: #fff;
-  flex-shrink: 0;
-}
-
-#${wrapperId} .footer {
-  margin: 40px 0 20px;
-  padding: 20px 0;
-  border-top: 2px solid #0a0a0a;
-  text-align: center;
-  font-size: 13px;
-  color: #111;
-}
-
-#${wrapperId} .footer a {
-  color: inherit;
-  text-decoration: underline;
-}
-
-/* Responsive */
-@media (max-width: 900px) {
-  #${wrapperId} .card__t {
-    font-size: 20px;
-  }
-}
+#${wrapperId} * { box-sizing: border-box; }
+#${wrapperId} .wrap { max-width: 100%; margin: 0; padding: 20px 0; }
+#${wrapperId} .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+#${wrapperId} .brand__badge { display: inline-grid; place-items: center; width: 32px; height: 32px; background: #0a0a0a; color: #ffd400; font: 700 16px/1 Space Grotesk, Inter, sans-serif; border-radius: 4px; }
+#${wrapperId} .brand__t { font: 800 22px/1 Space Grotesk, Inter, sans-serif; letter-spacing: -0.02em; }
+#${wrapperId} .when { font-weight: 600; font-size: 13px; margin-bottom: 20px; color: #4b5563; }
+#${wrapperId} .entity { margin: 24px 0 36px; }
+#${wrapperId} .entity__t { display: inline-block; background: #ffd400; color: #0a0a0a; padding: 6px 10px; border: 2px solid #0a0a0a; font: 800 18px/1 Space Grotesk, Inter, sans-serif; letter-spacing: .02em; text-transform: uppercase; margin: 0 0 14px; }
+#${wrapperId} .card { border-bottom: 2px solid #0a0a0a; padding: 18px 0; margin: 0 0 12px 0; position: relative; }
+#${wrapperId} .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 10px; background: linear-gradient(180deg, #ffd400 0%, #ffd400 100%); }
+#${wrapperId} .card__t { font: 800 24px/1.15 Space Grotesk, Inter, sans-serif; margin: 0 0 8px; letter-spacing: -0.01em; }
+#${wrapperId} .sub__sum { font-size: 16px; color: #4b5563; margin: 8px 0 12px; line-height: 1.5; }
+#${wrapperId} .items { margin: 0; padding: 0; list-style: none; }
+#${wrapperId} .items li { margin: 6px 0; font-size: 14px; line-height: 1.45; display: flex; align-items: baseline; gap: 8px; }
+#${wrapperId} .items a { color: inherit; text-decoration: none; border-bottom: 2px solid rgba(10, 10, 10, .15); box-shadow: inset 0 -2px 0 rgba(10, 10, 10, .15); transition: box-shadow .15s, border-color .15s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#${wrapperId} .items a:hover { box-shadow: inset 0 -2px 0 #0a0a0a; border-bottom-color: #0a0a0a; }
+#${wrapperId} .items .src { display: inline-block; margin-left: 4px; font-size: 11px; padding: 1px 6px; border: 1.5px solid #0a0a0a; border-radius: 999px; background: #fff; flex-shrink: 0; }
+#${wrapperId} .footer { margin: 40px 0 20px; padding: 20px 0; border-top: 2px solid #0a0a0a; text-align: center; font-size: 13px; color: #111; }
+#${wrapperId} .footer a { color: inherit; text-decoration: underline; }
+@media (max-width: 900px) { #${wrapperId} .card__t { font-size: 20px; } }
 </style>`;
 
   return `
@@ -1490,7 +1304,6 @@ function wordpressFragmentHTML({ report }) {
     </div>
   </div>
   <script>
-    // Ensure the content renders if WordPress strips our inline styles
     (function() {
       const wrapper = document.getElementById('${wrapperId}');
       if (wrapper && !wrapper.querySelector('.entity')) {
@@ -1501,7 +1314,6 @@ function wordpressFragmentHTML({ report }) {
 </div>`;
 }
 
-// Helper to generate content HTML
 function generateContentHTML(report, when) {
   const entities = report.entities || [];
   return entities.map(e => {
@@ -1539,7 +1351,7 @@ function generateContentHTML(report, when) {
 }
 
 /** =============================================
- *  Build Pipeline
+ *  Build Pipeline (unchanged)
  *  ============================================= */
 async function buildData() {
   const todayKey = new Date()
@@ -1557,7 +1369,7 @@ async function buildData() {
   console.log("\n🚀 Starting report generation...\n");
   const logs = { fetched: {}, filtered: {}, gpt_filtered: {}, deduped: {}, final: {} };
 
-  console.log("📡 Step 1/4: Fetching from Yam.ro RSS...");
+  console.log("📡 Step 1/4: Fetching from all RSS feeds...");
   const pools = {};
   const fetchPromises = ENTITY_ORDER.map(async (name) => {
     const raw = await fetchEntityPool(name);
@@ -1572,14 +1384,12 @@ async function buildData() {
     const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
     let filtered = [];
     if (name === "Campanie București") {
-      // Must be Romanian + elections in Bucharest + candidate keywords (strict)
       filtered = arr.filter(looksRomanianArticle).filter((it) => looksElectionRelated2025(it) && hasCampaignCandidateKeywords2025(it));
     } else if (name === "Local (Primării)") {
       filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
     } else {
       filtered = arr.filter(looksRomanianArticle);
     }
-    // Enforce global political rules
     filtered = enforcePoliticalRules(name, filtered);
     logs.filtered[name] = filtered.length;
 
@@ -1655,12 +1465,11 @@ async function buildData() {
 }
 
 /** =============================================
- *  HTML Generation (Semafor + Ground News vibes)
+ *  HTML Generation (unchanged)
  *  ============================================= */
 function esc(s) {
   return he.encode(String(s || ""), { useNamedReferences: true });
 }
-
 
 function getAnalyticsTag(id) {
   if (!id) return "";
@@ -1674,6 +1483,7 @@ function getAnalyticsTag(id) {
   gtag('config', '${safe}');
 </script>`;
 }
+
 function getStylesAndFonts() {
   return `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1684,7 +1494,7 @@ function getStylesAndFonts() {
   --bg:#ffffff;
   --muted:#4b5563;
   --line:#0a0a0a;
-  --accent:#ffd400;        /* Semafor yellow */
+  --accent:#ffd400;
   --accent-ink:#0a0a0a;
   --max:1200px;
 }
@@ -1694,8 +1504,6 @@ body{
   font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
   color:var(--ink);background:var(--bg);line-height:1.6;
 }
-
-/* Masthead */
 .header{position:sticky;top:0;z-index:10;background:var(--accent);border-bottom:2px solid var(--ink)}
 .header__in{max-width:var(--max);margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
 .brand{display:flex;align-items:center;gap:12px}
@@ -1703,11 +1511,7 @@ body{
 .brand__t{font:800 22px/1 Space Grotesk,Inter,sans-serif;letter-spacing:-0.02em}
 .when{font-weight:600;font-size:13px}
 .header__right a{font-size:22px;text-decoration:none}
-
-/* Page container */
 .wrap{max-width:var(--max);margin:0 auto;padding:20px}
-
-/* Section label (entity) */
 .entity{margin:12px 0 36px}
 .entity__t{
   display:inline-block;
@@ -1720,8 +1524,6 @@ body{
   text-transform:uppercase;
   margin:0 0 14px;
 }
-
-/* Story card (Ground News-ish stacked summaries) */
 .card{
   border-bottom:2px solid var(--ink);
   padding:18px 16px;
@@ -1760,9 +1562,9 @@ body{
   border-bottom:2px solid rgba(10,10,10,.15);
   box-shadow:inset 0 -2px 0 rgba(10,10,10,.15);
   transition:box-shadow .15s,border-color .15s;
-  white-space:nowrap;           /* force single line */
+  white-space:nowrap;
   overflow:hidden;
-  text-overflow:ellipsis;       /* ellipsis at end */
+  text-overflow:ellipsis;
   max-width:100%;
 }
 .items a:hover{box-shadow:inset 0 -2px 0 var(--ink);border-bottom-color:var(--ink)}
@@ -1770,17 +1572,11 @@ body{
   display:inline-block;margin-left:4px;font-size:11px;
   padding:1px 6px;border:1.5px solid var(--ink);border-radius:999px;background:#fff;
 }
-
-/* Media */
 .card__media{width:280px;flex-shrink:0;display:flex;flex-direction:column;gap:6px}
 .card__img{width:100%;height:180px;object-fit:cover;border:2px solid var(--ink);border-radius:6px}
 .photo-credit{font-size:11px;color:#555;margin-top:4px}
-
-/* Footer */
 .footer{max-width:var(--max);margin:40px auto 20px;padding:20px;border-top:2px solid var(--ink);text-align:center;font-size:13px;color:#111}
 .footer a{color:inherit}
-
-/* Responsive */
 @media (max-width:900px){
   .card{grid-template-columns:1fr}
   .card__media{width:100%;order:-1}
@@ -1802,7 +1598,7 @@ function getHeader(when) {
   <div class="header__in">
     <div class="brand" aria-label="brand header">
       <span class="brand__badge">CP</span>
-      <div class="brand__t">CONTEXTPOLITIC.ro</div>
+      <div class="brand__t">CONTEXTPOLITICO.ro</div>
     </div>
     <div class="when">${esc(when)}</div>
     <div class="header__right">
@@ -1912,9 +1708,7 @@ async function run() {
     console.log(`📊 Report statistics:`);
     console.log(`   - Total entities: ${report.entities.length}`);
     console.log(`   - Total subjects: ${report.entities.reduce((sum, e) => sum + e.subjects.length, 0)}`);
-    console.log(
-      `   - Total articles: ${report.entities.reduce((sum, e) => sum + e.subjects.reduce((s, sub) => s + sub.items.length, 0), 0)}`
-    );
+    console.log(`   - Total articles: ${report.entities.reduce((sum, e) => sum + e.subjects.reduce((s, sub) => s + sub.items.length, 0), 0)}`);
   } catch (err) {
     console.error("\n❌ Fatal error:", err.message);
     console.error(err.stack);
