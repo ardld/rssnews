@@ -6,6 +6,12 @@ import jw from "jaro-winkler";
 import he from "he";
 
 /** =============================================
+ *  Multi-RSS Feed Integration
+ *  =============================================
+ *  Sources: Yam.ro, Hotnews, G4Media, Libertatea
+ *  ============================================= */
+
+/** =============================================
  *  Configuration
  *  ============================================= */
 const CONFIG = {
@@ -16,7 +22,7 @@ const CONFIG = {
     retryDelay: 1000,
   },
   llm: {
-    model: "gpt-4o-mini", // Changed to a more reliable model
+    model: "gpt-5.1",                       // Updated to GPT-5.1
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
     maxTokens: 3000,
@@ -26,13 +32,7 @@ const CONFIG = {
       "https://news.yam.ro/ro/rss",
       "https://hotnews.ro/c/actualitate/feed",
       "https://www.g4media.ro/feed",
-      "https://libertatea.ro/feed/",
-      "https://spotmedia.ro/feed",
-      "https://recorder.ro/feed",
-      "https://captura.ro/feed",
-      "https://context.ro/feed/",
-      "https://pressone.ro/api/rss",
-      "https://romania.europalibera.org/api/zvo_mml-vomx-tpeukvm_"
+      "https://libertatea.ro/feed/"
     ]
   },
   filters: {
@@ -48,18 +48,23 @@ const CONFIG = {
   misc: {
     timezone: "Europe/Bucharest",
   },
-  analytics: { ga4: process.env.GA_MEASUREMENT_ID || "G-Z3SMLP8TGS" }
+  analytics: { ga4: process.env.GA_MEASUREMENT_ID || "G-Z3SMLP8TGS" },
+  wordpress: {
+    generateFragment: true,
+    wrapperId: "contextpolitic-embed"
+  }
 };
 
 const OUT_HTML = path.join(CONFIG.paths.outDir, "index.html");
 const OUT_JSON = path.join(CONFIG.paths.outDir, "data.json");
+const OUT_WORDPRESS = path.join(CONFIG.paths.outDir, "wordpress-fragment.html");
 const LOGS_JSON = path.join(CONFIG.paths.outDir, "logs.json");
 
 const openai = CONFIG.api.openaiKey ? new OpenAI({ apiKey: CONFIG.api.openaiKey }) : null;
 const llmCache = new Map();
 
 /** =============================================
- *  Rate Limiter
+ *  Rate Limiter (for OpenAI calls)
  *  ============================================= */
 class RateLimiter {
   constructor(maxCalls, perMs) {
@@ -119,22 +124,9 @@ async function withRetry(fn, maxRetries = CONFIG.api.maxRetries, delay = CONFIG.
 }
 
 /** =============================================
- *  RSS Feed Integration
+ *  RSS Feed Integration - MULTIPLE SOURCES
  *  ============================================= */
 let rssItemsCache = null;
-
-const RSS_DOMAINS = {
-  "https://news.yam.ro/ro/rss": "https://news.yam.ro",
-  "https://hotnews.ro/c/actualitate/feed": "https://hotnews.ro",
-  "https://www.g4media.ro/feed": "https://www.g4media.ro",
-  "https://libertatea.ro/feed/": "https://libertatea.ro",
-  "https://spotmedia.ro/feed": "https://spotmedia.ro",
-  "https://recorder.ro/feed": "https://recorder.ro",
-  "https://captura.ro/feed": "https://captura.ro",
-  "https://context.ro/feed/": "https://context.ro",
-  "https://pressone.ro/api/rss": "https://pressone.ro",
-  "https://romania.europalibera.org/api/zvo_mml-vomx-tpeukvm_": "https://romania.europalibera.org"
-};
 
 async function fetchAndParseRSS(feedUrl) {
   console.log(`  Fetching RSS: ${feedUrl}...`);
@@ -160,52 +152,25 @@ async function fetchAndParseRSS(feedUrl) {
       const description = extractField(/<description>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/description>)/s);
       const pubDate = extractField(/<pubDate>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/pubDate>)/s);
       
-      // Enhanced thumbnail extraction
-      let thumbnail = null;
-      const enclosureMatch = itemContent.match(/<enclosure\s+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i);
-      const mediaContentMatch = itemContent.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i);
-      const imgInDescriptionMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
-      const ogImageMatch = itemContent.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-      
-      if (enclosureMatch) {
-        thumbnail = enclosureMatch[1];
-      } else if (mediaContentMatch) {
-        thumbnail = mediaContentMatch[1];
-      } else if (imgInDescriptionMatch) {
-        thumbnail = imgInDescriptionMatch[1];
-      } else if (ogImageMatch) {
-        thumbnail = ogImageMatch[1];
-      }
-      
-      // Make relative URLs absolute
-      if (thumbnail && !thumbnail.startsWith('http')) {
-        try {
-          const baseUrl = new URL(feedUrl).origin;
-          thumbnail = new URL(thumbnail, baseUrl).toString();
-        } catch (e) {
-          thumbnail = null;
-        }
-      }
-      
-      const cleanSnippet = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      
       if (title && link) {
+        const cleanSnippet = description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        
         items.push({
           title,
           link: canonicalizeUrl(link),
           source: domainOf(link) || new URL(feedUrl).hostname,
           date: pubDate,
           snippet: cleanSnippet,
-          thumbnail,
+          thumbnail: null,
         });
       }
     }
     
-    console.log(`    ✓ Parsed ${items.length} items from ${feedUrl}`);
+    console.log(`    ✓ Parsed ${items.length} items`);
     return items;
   } catch (err) {
     console.error(`❌ Failed to fetch/parse ${feedUrl}:`, err.message);
-    return [];
+    return []; // Return empty array on failure
   }
 }
 
@@ -234,11 +199,8 @@ async function fetchAllRSSFeeds() {
  *  ============================================= */
 const now = () => new Date();
 
-// FIXED: Actually check last 24h, not just same calendar day
 function withinLast24h(dateStr) {
   if (!dateStr) return false;
-  
-  // Try relative time first
   const s = String(dateStr).toLowerCase();
   const n = now().getTime();
   const rel = /([0-9]{1,3})\s*(minute|min|minut|ore|ora|oră|hours|hour|h|zile|zi|day|days)\s*(în urmă|in urma|ago)?/;
@@ -252,13 +214,9 @@ function withinLast24h(dateStr) {
     else if (/zi|zile|day/.test(unit)) ms = val * 24 * 60 * 60 * 1000;
     return ms <= CONFIG.filters.timeWindowHours * 60 * 60 * 1000;
   }
-  
-  // FIXED: Check last 24h from now, not same calendar day
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return false;
-  
-  const twentyFourHoursAgo = now().getTime() - (CONFIG.filters.timeWindowHours * 60 * 60 * 1000);
-  return d.getTime() >= twentyFourHoursAgo;
+  if (!isNaN(d.getTime())) return n - d.getTime() <= CONFIG.filters.timeWindowHours * 60 * 60 * 1000;
+  return true;
 }
 
 function canonicalizeUrl(u) {
@@ -301,29 +259,311 @@ function djb2(str) {
 const RO_SIGNALS = ["românia", "româniei", "romania", "romaniei", "bucurești", "bucuresti"];
 
 const ROLE_WORDS = [
-  "primar", "primarul", "primăria", "primaria", "consiliu local", "cl ",
-  "hotărâre", "hotarare", "proiect", "buget",
-  "consiliu județean", "consiliul județean", "consiliu judetean", "consiliul judetean", "cj ",
-  "prefect", "prefectură", "prefectura",
-];
-
-const CITY_WORDS = [
-  "sector 1", "sector 2", "sector 3", "sector 4", "sector 5", "sector 6",
-  "bucurești", "bucuresti", "ilfov", "alba iulia", "arad", "pitești", "pitesti",
-  "bacău", "bacau", "oradea", "bistrița", "bistrita", "botoșani", "botosani",
-  "brăila", "braila", "brașov", "brasov", "buzău", "buzau", "călărași", "calarasi",
-  "cluj-napoca", "constanța", "constanta", "craiova", "drobeta-turnu severin",
-  "focșani", "focsani", "galați", "galati", "giurgiu", "târgu jiu", "targu jiu",
-  "iași", "iasi", "timișoara", "timisoara", "tulcea", "râmnicu vâlcea", "ramnicu valcea",
-  // ... (rest of cities)
+  "primar",
+  "primarul",
+  "primăria",
+  "primaria",
+  "consiliu local",
+  "cl ",
+  "hotărâre",
+  "hotarare",
+  "proiect",
+  "buget",
+  "consiliu județean",
+  "consiliul județean",
+  "consiliu judetean",
+  "consiliul judetean",
+  "cj ",
+  "prefect",
+  "prefectură",
+  "prefectura",
 ];
 
 const ELECTION_WORDS = [
-  "alegeri", "alegeri locale", "alegeri parlamentare", "alegeri prezidențiale",
-  "vot", "candidat", "candidați", "campanie electorală"
+  "alegeri",
+  "candidat",
+  "candidați",
+  "candidatura",
+  "campanie electorală",
+  "scrutin",
+  "vot",
+  "urne",
+  "turul",
+  "secții de votare",
+  "pmb",
+  "primăria generală",
+  "primaria generala",
+  "alegeri locale",
+  "alegeri municipale",
 ];
 
-// --- Political enforcement
+const CITY_WORDS = [
+  "sector 1",
+  "sector 2",
+  "sector 3",
+  "sector 4",
+  "sector 5",
+  "sector 6",
+  "bucurești",
+  "bucuresti",
+  "ilfov",
+  "alba iulia",
+  "arad",
+  "pitești",
+  "pitesti",
+  "bacău",
+  "bacau",
+  "oradea",
+  "bistrița",
+  "bistrita",
+  "botoșani",
+  "botosani",
+  "brăila",
+  "braila",
+  "brașov",
+  "brasov",
+  "buzău",
+  "buzau",
+  "călărași",
+  "calarasi",
+  "cluj-napoca",
+  "constanța",
+  "constanta",
+  "craiova",
+  "drobeta-turnu severin",
+  "drobeta turnu severin",
+  "focșani",
+  "focsani",
+  "galați",
+  "galati",
+  "giurgiu",
+  "târgu jiu",
+  "targu jiu",
+  "miercurea ciuc",
+  "deva",
+  "sfântu gheorghe",
+  "sfantu gheorghe",
+  "hunedoara",
+  "iași",
+  "iasi",
+  "baia mare",
+  "drobeta",
+  "târgu mureș",
+  "targu mures",
+  "piatra neamț",
+  "piatra neamt",
+  "ploiești",
+  "ploiesti",
+  "slatina",
+  "satu mare",
+  "sibiu",
+  "suceava",
+  "alexandria",
+  "reșița",
+  "resita",
+  "timișoara",
+  "timisoara",
+  "tulcea",
+  "râmnicu vâlcea",
+  "ramnicu valcea",
+  "vaslui",
+  "târgoviște",
+  "targoviste",
+  "zalău",
+  "zalau",
+  "bihor",
+  "dolj",
+  "timiș",
+  "timis",
+  "alba",
+  "prahova",
+  "mehedinți",
+  "mehedinti",
+  "sălaj",
+  "salaj",
+  "olt",
+  "aiud",
+  "blaj",
+  "sebeș",
+  "sebes",
+  "onești",
+  "onesti",
+  "moinești",
+  "moinesti",
+  "bârlad",
+  "barlad",
+  "sighetu marmației",
+  "sighetu marmatiei",
+  "dorohoi",
+  "făgăraș",
+  "fagaras",
+  "săcele",
+  "sacele",
+  "codlea",
+  "râmnicu sărat",
+  "ramnicu sarat",
+  "caransebeș",
+  "caransebes",
+  "oltenița",
+  "oltenita",
+  "turda",
+  "câmpia turzii",
+  "campia turzii",
+  "dej",
+  "gherla",
+  "mangalia",
+  "medgidia",
+  "năvodari",
+  "navodari",
+  "târgu secuiesc",
+  "targu secuiesc",
+  "odorheiu secuiesc",
+  "gheorgheni",
+  "toplița",
+  "toplita",
+  "calafat",
+  "băilești",
+  "bailesti",
+  "tecuci",
+  "motru",
+  "petroșani",
+  "petrosani",
+  "lupeni",
+  "vulcan",
+  "orăștie",
+  "orastie",
+  "brad",
+  "fetești",
+  "fetesti",
+  "urziceni",
+  "pașcani",
+  "pascani",
+  "orșova",
+  "orsova",
+  "reghin",
+  "sighișoara",
+  "sighisoara",
+  "târnăveni",
+  "tarnaveni",
+  "roman",
+  "caracal",
+  "câmpina",
+  "campina",
+  "carei",
+  "mediaș",
+  "medias",
+  "lugoj",
+  "turnu măgurele",
+  "turnu magurele",
+  "roșiorii de vede",
+  "rosiorii de vede",
+  "sulina",
+  "huși",
+  "husi",
+  "drăgășani",
+  "dragasani",
+  "adjud",
+  "câmpulung",
+  "campulung",
+  "curtea de argeș",
+  "curtea de arges",
+  "fălticeni",
+  "falticeni",
+  "rădăuți",
+  "radauti",
+];
+
+const BUC_CAMPAIGN_CANDIDATES = [
+  "cătălin drulă",
+  "catalin drula",
+  "drulă",
+  "drula",
+  "daniel băluță",
+  "daniel baluta",
+  "băluță",
+  "baluta",
+  "ciprian ciucu",
+  "ciucu",
+  "anca alexandrescu",
+  "roxana wanka ciceală",
+  "roxana ciceală",
+  "roxana ciceala",
+  "ciceală",
+  "ciceala",
+  "george burcea",
+  "vlad gheorghe",
+  "liviu negoiță",
+  "liviu negoita",
+  "eugen teodorovici",
+];
+
+function hasRomaniaSignal(text) {
+  const t = (text || "").toLowerCase();
+  return RO_SIGNALS.some((w) => t.includes(w)) || CITY_WORDS.some((w) => t.includes(w));
+}
+function isRomanianDomain(u) {
+  return domainOf(u).endsWith(".ro");
+}
+function looksRomanianArticle(item) {
+  const text = `${item.title || ""} ${item.snippet || ""}`;
+  return isRomanianDomain(item.link || "") && hasRomaniaSignal(text);
+}
+function looksElectionRelated(item) {
+  const text = (`${item.title || ""} ${item.snippet || ""}`).toLowerCase();
+  return (
+    ELECTION_WORDS.some((w) => text.includes(w)) &&
+    (text.includes("bucurești") || text.includes("bucuresti") || text.includes("pmb"))
+  );
+}
+function hasCampaignCandidateKeywords(item) {
+  const t = (`${item.title || ""} ${item.snippet || ""}`).toLowerCase();
+  return BUC_CAMPAIGN_CANDIDATES.some((w) => t.includes(w));
+}
+
+// === 2025 Bucharest PMB campaign detection ===
+const ELECTION_WORDS_2025 = [
+  "alegeri", "alegeri locale", "alegeri partiale", "anticipate",
+  "campanie", "campanie electorala", "program electoral", "platforma",
+  "candidat", "candidati", "candidatura", "depunerea candidaturilor",
+  "semnaturi", "liste de candidati", "validare candidatura",
+  "sondaj", "exit poll", "rezultate partiale", "numarare voturi",
+  "biroul electoral", "bec", "aep", "dezbatere electorala", "afise electorale"
+];
+const BUC_CAMPAIGN_KEYWORDS_2025 = [
+  "bucuresti", "capitala",
+  "pmb", "primaria capitalei", "primaria municipiului bucuresti",
+  "primaria generala", "primar general", "primarul general",
+  "cgmb", "consiliul general al municipiului bucuresti"
+];
+const BUC_CAMPAIGN_CANDIDATES_2025 = [
+  "ciprian ciucu", "ciucu",
+  "daniel baluta", "baluta",
+  "catalin drula", "drula",
+  "anca alexandrescu", "alexandrescu",
+  "stelian bujduveanu", "bujduveanu"
+];
+const BUC_RACE_PHRASES_2025 = [
+  "cursa pentru capitala", "lupta pentru primaria capitalei",
+  "primaria bucuresti", "fotoliul de primar general",
+  "dezbatere la primaria capitalei"
+];
+function looksElectionRelated2025(item) {
+  const t = (`${item.title||""} ${item.snippet||item.summary||""}`).toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const hasBuc = BUC_CAMPAIGN_KEYWORDS_2025.some(w => t.includes(w));
+  const hasElectoral = ELECTION_WORDS_2025.some(w => t.includes(w));
+  const hasRacePhrase = BUC_RACE_PHRASES_2025.some(w => t.includes(w));
+  const hasCandidate = BUC_CAMPAIGN_CANDIDATES_2025.some(n => t.includes(n));
+  return hasBuc && (hasElectoral || hasCandidate || hasRacePhrase);
+}
+function hasCampaignCandidateKeywords2025(item) {
+  const t = (`${item.title||""} ${item.snippet||item.summary||""}`).toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  return BUC_CAMPAIGN_CANDIDATES_2025.some(n => t.includes(n));
+}
+
+// --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere"; PMB race only at "Campanie București")
+//     + treat government people/roles as "power" to prevent leaks into Opoziție
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
   "moșteanu", "mosteanu", "liviu-ionut mosteanu", "ionut mosteanu",
@@ -333,14 +573,6 @@ const GOVERNMENT_ROLE_TOKENS = [
   "premier","vicepremier","secretar de stat",
   "mapn","ministerul apararii","apărării","apararii"
 ];
-
-function looksRomanianArticle(item) {
-  const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
-  return RO_SIGNALS.some(signal => text.includes(signal)) || 
-         text.includes('românia') || text.includes('romania') ||
-         text.includes('bucurești') || text.includes('bucuresti');
-}
-
 function mentionsPowerSignals(item) {
   const t = (`${item.title || ""} ${item.snippet || item.summary || ""}`)
     .toLowerCase()
@@ -351,10 +583,13 @@ function mentionsPowerSignals(item) {
     GOVERNMENT_ROLE_TOKENS.some((k) => t.includes(k))
   );
 }
-
+function isPMBGeneralCampaign(item) {
+  try { return looksElectionRelated2025(item) && hasCampaignCandidateKeywords2025(item); } catch { return false; }
+}
 function enforcePoliticalRules(targetName, arr) {
   return arr.filter((it) => {
-    if (targetName === "opozitie" && mentionsPowerSignals(it)) return false;
+    if (isPMBGeneralCampaign(it)) return targetName === "Campanie București";
+    if (targetName === "Opoziție" && mentionsPowerSignals(it)) return false;
     return true;
   });
 }
@@ -372,20 +607,21 @@ function localRoleCityPass(item) {
 }
 
 /** =============================================
- *  Entity Queries
+ *  Entity Queries (unchanged)
  *  ============================================= */
 const ENTITY_ORDER = [
-  "presedintie",
-  "guvern",
-  "parlament",
-  "putere",
-  "opozitie",
-  "local",
+  "Președinție",
+  "Guvern",
+  "Parlament",
+  "Coaliție (Putere)",
+  "Opoziție",
+  "Campanie București",
+  "Local (Primării)",
 ];
 
 const QUERIES = {
-  "presedintie": ["Nicușor Dan", "Nicusor Dan", "Administrația Prezidențială", "Administratia Prezidentiala"],
-  "guvern": [
+  "Președinție": ["Nicușor Dan", "Nicusor Dan", "Administrația Prezidențială", "Administratia Prezidentiala"],
+  "Guvern": [
     "Guvernul României",
     "Guvernul Romaniei",
     "Premierul României",
@@ -396,18 +632,15 @@ const QUERIES = {
     "ministrul",
     "ministra",
   ],
-  "parlament": [
+  "Parlament": [
     "Parlamentul României",
     "Parlamentul Romaniei",
     "Camera Deputaților",
     "Camera Deputatilor",
     "Senatul României",
     "Senatul Romaniei",
-    "deputat",
-    "senator",
-    "parlamentar"
   ],
-  "putere": [
+  "Coaliție (Putere)": [
     "PSD",
     "Partidul Social Democrat",
     "PNL",
@@ -424,7 +657,7 @@ const QUERIES = {
     "Catalin Drula",
     "Bolojan",
   ],
-  "opozitie": [
+  "Opoziție": [
     '(AUR OR Alianța pentru Unirea Românilor OR Alianta pentru Unirea Romanilor OR George Simion) -aurora -"de aur" -aurul -gold -prețul -pretul -gram -site:imobiliare.ro -site:storia.ro -site:olx.ro',
     "SOS România",
     "SOS Romania",
@@ -435,22 +668,34 @@ const QUERIES = {
     "Anamaria Gavrilă",
     "Anamaria Gavrila",
   ],
-  "local": ["primar OR primăria OR consiliu județean OR CJ OR prefect"],
+  "Campanie București": [
+    "alegeri București",
+    "alegeri Bucuresti",
+    "alegeri PMB",
+    "Primăria Generală",
+    "Primaria Generala",
+    "candidat PMB",
+    "candidați Primăria",
+    "campanie electorală București",
+    "alegeri locale București",
+    "primar general București",
+  ],
+  "Local (Primării)": ["primar OR primăria OR consiliu județean OR CJ OR prefect"],
 };
 
 /** =============================================
- *  RSS-based News Search
+ *  RSS-based News Search - Updated to use all feeds
  *  ============================================= */
 async function serpNewsSearch(q, opts = {}) {
   console.log(`  Searching across all RSS feeds: "${q}"`);
   
   const allItems = await fetchAllRSSFeeds();
   
-  // More flexible query cleaning
+  // Clean query: remove Google operators, extract keywords
   const cleanQuery = q
-    .replace(/-("[^"]+"|\S+)/g, '') // Remove exclusions
-    .replace(/\bsite:\S+/g, '') // Remove site operators
-    .replace(/[()]/g, '') // Remove parentheses
+    .replace(/-("[^"]+"|\S+)/g, '')
+    .replace(/\bsite:\S+/g, '')
+    .replace(/[()]/g, '')
     .trim();
   
   // Split by OR to create keyword groups
@@ -458,9 +703,6 @@ async function serpNewsSearch(q, opts = {}) {
     .split(/\s+OR\s+/i)
     .map(group => group.trim())
     .filter(Boolean);
-  
-  // DEBUG: Log keyword groups
-  console.log(`    Keyword groups: ${keywordGroups.join(' | ')}`);
   
   // Filter items matching any keyword group
   const results = allItems.filter(item => {
@@ -487,7 +729,7 @@ async function fetchEntityPool(name) {
 }
 
 /** =============================================
- *  Deduplication
+ *  Deduplication (unchanged)
  *  ============================================= */
 function cosine(a, b) {
   let s = 0, na = 0, nb = 0;
@@ -523,9 +765,7 @@ Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3
     });
     const raw = r.choices?.[0]?.message?.content?.trim() || "[]";
     let groups = [];
-    try { groups = JSON.parse(raw); } catch {
-      console.warn("⚠️  Failed to parse GPT JSON response");
-    }
+    try { groups = JSON.parse(raw); } catch {}
     if (!Array.isArray(groups)) return items;
 
     const keep = new Array(sub.length).fill(true);
@@ -543,8 +783,6 @@ Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3
 }
 
 async function dedupe(items) {
-  console.log(`  Starting deduplication for ${items.length} items...`);
-  
   // 1) Canonical URL-based
   const byCanon = new Map();
   for (const it of items) {
@@ -557,7 +795,6 @@ async function dedupe(items) {
     if (!byCanon.has(k)) byCanon.set(k, it);
   }
   let list = Array.from(byCanon.values());
-  console.log(`  After URL dedup: ${list.length} items`);
 
   // 2) Embedding-based
   if (openai && list.length > 0) {
@@ -590,7 +827,6 @@ async function dedupe(items) {
         if (!dup) out.push({ ...list[i], _emb: allVecs[i] });
       }
       list = out.map((x) => { delete x._emb; return x; });
-      console.log(`  After embedding dedup: ${list.length} items`);
     } catch (err) {
       console.warn("⚠️  Embedding deduplication failed, falling back to JW:", err.message);
     }
@@ -609,17 +845,14 @@ async function dedupe(items) {
     }
     if (!dup) out2.push(it);
   }
-  console.log(`  After JW dedup: ${out2.length} items`);
 
   // 4) Optional LLM pass
   const out3 = await gptTitleMerge(out2);
-  console.log(`  After LLM dedup: ${out3.length} items`);
-  
   return out3;
 }
 
 /** =============================================
- *  LLM Operations
+ *  LLM Operations (unchanged)
  *  ============================================= */
 async function cachedLLMCall(key, fn) {
   if (llmCache.has(key)) {
@@ -659,7 +892,7 @@ Răspunde cu un array JSON de indici ai articolelor DE PĂSTRAT. Exemplu: [0, 2,
       const r = await openai.chat.completions.create({
         model: CONFIG.llm.model,
         messages: [
-          { role: "system", content: "Ræspunde DOAR cu un array JSON de numere întregi. Fără alt text." },
+          { role: "system", content: "Răspunde DOAR cu un array JSON de numere întregi. Fără alt text." },
           { role: "user", content: `${prompt}\n\nArticole:\n${JSON.stringify(slim, null, 2)}` },
         ],
       });
@@ -696,7 +929,7 @@ TITLU_RO: <titlu jurnalistic scurt>
 SUMAR_RO: <max 2 propoziții scurte>`;
 
 /** ===============================
- *  Clustering (per entity, with GPT)
+ *  Clustering (per entity, with GPT-5.1)
  *  =============================== */
 async function bunchForEntity(entityName, items) {
   if (!items || !items.length) return [];
@@ -711,10 +944,6 @@ async function bunchForEntity(entityName, items) {
       link: it.link,
       date: it.date,
     }));
-    
-    // DEBUG: Log what we're sending to GPT
-    console.log(`    Sending ${userItems.length} items to GPT for clustering...`);
-    
     try {
       await openaiLimiter.acquire();
       const r = await openai.chat.completions.create({
@@ -724,76 +953,18 @@ async function bunchForEntity(entityName, items) {
           { role: "user", content: JSON.stringify({ entity: entityName, items: userItems }, null, 2) },
         ],
       });
-      
-      const rawContent = r.choices?.[0]?.message?.content || "";
-      console.log(`    GPT raw response: ${rawContent.substring(0, 200)}...`);
-      
       let parsed = [];
-      try { 
-        parsed = JSON.parse(rawContent); 
-        console.log(`    GPT parsed response: ${parsed.length} clusters`);
-      } catch (e) {
-        console.error(`    Failed to parse GPT JSON: ${e.message}`);
-      }
-      
-      if (!Array.isArray(parsed)) {
-        console.warn(`    GPT returned non-array, using fallback clustering`);
-        // FALLBACK: Simple keyword clustering
-        return fallbackClustering(items);
-      }
-      
+      try { parsed = JSON.parse(r.choices?.[0]?.message?.content || ""); } catch {}
+      if (!Array.isArray(parsed)) parsed = [];
       return parsed.slice(0, 3).map((c) => ({
         label: String(c.label || `Subiect ${entityName}`),
         indices: Array.isArray(c.indices) ? c.indices.slice(0, 5) : [],
       }));
     } catch (err) {
       console.error(`❌ Clustering failed for ${entityName}:`, err.message);
-      console.log(`    Using fallback clustering...`);
-      return fallbackClustering(items);
+      return [];
     }
   });
-}
-
-// Fallback clustering when GPT fails
-function fallbackClustering(items) {
-  console.log(`    FALLBACK: Creating clusters based on title similarity...`);
-  
-  // Simple clustering based on shared keywords
-  const clusters = [];
-  const used = new Set();
-  
-  for (let i = 0; i < items.length && clusters.length < 3; i++) {
-    if (used.has(i)) continue;
-    
-    const baseTitle = items[i].title.toLowerCase();
-    const clusterIndices = [i];
-    used.add(i);
-    
-    for (let j = i + 1; j < items.length && clusterIndices.length < 5; j++) {
-      if (used.has(j)) continue;
-      const compareTitle = items[j].title.toLowerCase();
-      
-      // Simple similarity: check if they share important words
-      const baseWords = baseTitle.split(/\s+/).filter(w => w.length > 3);
-      const compareWords = compareTitle.split(/\s+/).filter(w => w.length > 3);
-      const sharedWords = baseWords.filter(w => compareWords.includes(w));
-      
-      if (sharedWords.length >= 2) { // At least 2 shared words
-        clusterIndices.push(j);
-        used.add(j);
-      }
-    }
-    
-    if (clusterIndices.length >= 2) { // Only keep clusters with 2+ items
-      clusters.push({
-        label: items[i].title.substring(0, 50) + "...",
-        indices: clusterIndices
-      });
-    }
-  }
-  
-  console.log(`    FALLBACK: Created ${clusters.length} clusters`);
-  return clusters;
 }
 
 /** Title & Summary generator */
@@ -806,7 +977,6 @@ async function titleAndSummaryFor(items) {
       lead: it.snippet || "",
       fragment: it.snippet || "",
     }));
-    
     try {
       await openaiLimiter.acquire();
       const r = await openai.chat.completions.create({
@@ -822,17 +992,13 @@ async function titleAndSummaryFor(items) {
       return { title: t, summary: s };
     } catch (err) {
       console.error("❌ Title/summary generation failed:", err.message);
-      // FALLBACK: Use first article's title and snippet
-      return { 
-        title: items[0]?.title || "Subiect", 
-        summary: items[0]?.snippet?.substring(0, 150) || "" 
-      };
+      return { title: "", summary: "" };
     }
   });
 }
 
 /** =============================================
- *  Cross-entity topic collapsing
+ *  Cross-entity topic collapsing (unchanged)
  *  ============================================= */
 function itemSig(it) {
   const u = canonicalizeUrl(it.link || "");
@@ -843,19 +1009,18 @@ function itemSig(it) {
     return u;
   }
 }
-
 function topicKeyFromItems(items) {
   const sigs = Array.from(new Set((items || []).map(itemSig))).sort();
   return djb2(sigs.join("|"));
 }
-
 const ENTITY_PRIORITY = [
-  "presedintie",
-  "guvern",
-  "parlament",
-  "putere",
-  "opozitie",
-  "local",
+  "Președinție",
+  "Guvern",
+  "Parlament",
+  "Coaliție (Putere)",
+  "Opoziție",
+  "Campanie București",
+  "Local (Primării)",
 ];
 
 function scoreOwner(allText) {
@@ -863,12 +1028,13 @@ function scoreOwner(allText) {
   const score = (re) => (t.match(re) || []).length;
 
   const scores = new Map();
-  scores.set("presedintie", score(/\bpresedinte|presedintie|cotroceni|nicusor\s+dan\b/g));
-  scores.set("guvern", score(/\bpremier|guvern|ministru|ministerul|ministra\b/g));
-  scores.set("parlament", score(/\bparlament|senat|camera\s+deputatilor|deputat|senator|parlamentar\b/g));
-  scores.set("putere", score(/\bpsd|pnl|udmr|usr|coalit/g));
-  scores.set("opozitie", score(/\baur\b|\bsos\s+romania\b/g));
-  scores.set("local", score(/\bprimar|primaria|consiliu\s+jude?tean|cj\b/g));
+  scores.set("Președinție", score(/\bpresedinte|presedintie|cotroceni|nicusor\s+dan\b/g));
+  scores.set("Guvern", score(/\bpremier|guvern|ministru|ministerul|ministra\b/g));
+  scores.set("Parlament", score(/\bparlament|senat|camera\s+deputatilor\b/g));
+  scores.set("Campanie București", score(/\bbucuresti|pmb|campanie\b/g));
+  scores.set("Local (Primării)", score(/\bprimar|primaria|consiliu\s+jude?tean|cj\b/g));
+  scores.set("Coaliție (Putere)", score(/\bpsd|pnl|udmr|usr|coalit/g));
+  scores.set("Opoziție", score(/\baur\b|\bsos\s+romania\b/g));
 
   let best = ENTITY_PRIORITY[0], bestVal = -1;
   for (const [name, val] of scores.entries()) {
@@ -948,8 +1114,7 @@ function crossEntityCollapseURLUnion(entities) {
         if (!byUrl.has(sig)) byUrl.set(sig, it);
       }
     }
-    const ownerSubj = entities[ownerRef.eIdx]?.subjects?.[ownerRef.sIdx];
-    if (ownerSubj) ownerSubj.items = Array.from(byUrl.values()).slice(0, 5);
+    ownerRef.subject.items = Array.from(byUrl.values()).slice(0, 5);
 
     for (const r of bucket) {
       if (r !== ownerRef) toDelete.add(`${r.eIdx}:${r.sIdx}`);
@@ -1079,26 +1244,228 @@ Unde "indices" sunt indicii din lista de intrare (0-based). Nu include motive sa
 }
 
 /** =============================================
- *  Source Footer Generator
+ *  WordPress Fragment Generator (unchanged)
  *  ============================================= */
-function generateSourceFooter() {
-  const sources = Object.entries(RSS_DOMAINS).map(([rss, domain]) => ({
-    name: domain.replace('https://', '').replace('www.', '').split('.')[0],
-    domain: domain
-  }));
-
-  const sourceLinks = sources.map(s => 
-    `<a href="${esc(s.domain)}" target="_blank" rel="noopener">${esc(s.name)}</a>`
-  ).join(', ');
+function wordpressFragmentHTML({ report }) {
+  const date = new Date(report.generatedAt);
+  const when = date.toLocaleString("ro-RO", {
+    timeZone: CONFIG.misc.timezone,
+    dateStyle: "long",
+    timeStyle: "short",
+  });
+  
+  const wrapperId = CONFIG.wordpress.wrapperId;
+  const contentHtml = generateContentHTML(report, when);
+  
+  const scopedCSS = `
+<style id="${wrapperId}-styles">
+#${wrapperId} {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: #0a0a0a;
+  line-height: 1.6;
+}
+#${wrapperId} * { box-sizing: border-box; }
+#${wrapperId} .wrap { max-width: 100%; margin: 0; padding: 20px 0; }
+#${wrapperId} .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+#${wrapperId} .brand__badge { display: inline-grid; place-items: center; width: 32px; height: 32px; background: #0a0a0a; color: #ffd400; font: 700 16px/1 Space Grotesk, Inter, sans-serif; border-radius: 4px; }
+#${wrapperId} .brand__t { font: 800 22px/1 Space Grotesk, Inter, sans-serif; letter-spacing: -0.02em; }
+#${wrapperId} .when { font-weight: 600; font-size: 13px; margin-bottom: 20px; color: #4b5563; }
+#${wrapperId} .entity { margin: 24px 0 36px; }
+#${wrapperId} .entity__t { display: inline-block; background: #ffd400; color: #0a0a0a; padding: 6px 10px; border: 2px solid #0a0a0a; font: 800 18px/1 Space Grotesk, Inter, sans-serif; letter-spacing: .02em; text-transform: uppercase; margin: 0 0 14px; }
+#${wrapperId} .card { border-bottom: 2px solid #0a0a0a; padding: 18px 0; margin: 0 0 12px 0; position: relative; }
+#${wrapperId} .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 10px; background: linear-gradient(180deg, #ffd400 0%, #ffd400 100%); }
+#${wrapperId} .card__t { font: 800 24px/1.15 Space Grotesk, Inter, sans-serif; margin: 0 0 8px; letter-spacing: -0.01em; }
+#${wrapperId} .sub__sum { font-size: 16px; color: #4b5563; margin: 8px 0 12px; line-height: 1.5; }
+#${wrapperId} .items { margin: 0; padding: 0; list-style: none; }
+#${wrapperId} .items li { margin: 6px 0; font-size: 14px; line-height: 1.45; display: flex; align-items: baseline; gap: 8px; }
+#${wrapperId} .items a { color: inherit; text-decoration: none; border-bottom: 2px solid rgba(10, 10, 10, .15); box-shadow: inset 0 -2px 0 rgba(10, 10, 10, .15); transition: box-shadow .15s, border-color .15s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#${wrapperId} .items a:hover { box-shadow: inset 0 -2px 0 #0a0a0a; border-bottom-color: #0a0a0a; }
+#${wrapperId} .items .src { display: inline-block; margin-left: 4px; font-size: 11px; padding: 1px 6px; border: 1.5px solid #0a0a0a; border-radius: 999px; background: #fff; flex-shrink: 0; }
+#${wrapperId} .footer { margin: 40px 0 20px; padding: 20px 0; border-top: 2px solid #0a0a0a; text-align: center; font-size: 13px; color: #111; }
+#${wrapperId} .footer a { color: inherit; text-decoration: underline; }
+@media (max-width: 900px) { #${wrapperId} .card__t { font-size: 20px; } }
+</style>`;
 
   return `
-    <div class="source-footer">
-      <p><strong>Sursele indexate:</strong> ${sourceLinks}</p>
-    </div>`;
+<div id="${wrapperId}">
+  ${scopedCSS}
+  <div class="wrap">
+    <div class="brand">
+      <span class="brand__badge">CP</span>
+      <div class="brand__t">CONTEXTPOLITIC.ro</div>
+    </div>
+    <div class="when">${esc(when)}</div>
+    <div class="content">${contentHtml}</div>
+    <div class="footer">
+      <p>(c)2025 contextpolitic.ro — generat AI din presa românească | 
+         <a href="https://www.revolut.me/haurbalaur/" target="_blank" rel="noopener">dă și tu o cafea</a> | 
+         <a href="mailto:mihnead@pm.me">contact</a>
+      </p>
+    </div>
+  </div>
+  <script>
+    (function() {
+      const wrapper = document.getElementById('${wrapperId}');
+      if (wrapper && !wrapper.querySelector('.entity')) {
+        console.warn('ContextPolit: Content not rendered, WordPress may have stripped the script.');
+      }
+    })();
+  </script>
+</div>`;
+}
+
+function generateContentHTML(report, when) {
+  const entities = report.entities || [];
+  return entities.map(e => {
+    const subs = e.subjects || [];
+    if (!subs.length) return '';
+    
+    const cards = subs.map(s => {
+      const items = (s.items || []).slice(0, 5).map(it => 
+        `<li>
+          <a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a>
+          <span class="src">${esc(domainOf(it.link))}</span>
+        </li>`
+      ).join('');
+      
+      const sum = s.sumar_ro ? `<p class="sub__sum">${esc(s.sumar_ro)}</p>` : '';
+      
+      return `
+        <div class="card">
+          <div class="card__body">
+            <div class="card__head">
+              <h3 class="card__t">${esc(s.titlu_ro || s.label || 'Subiect')}</h3>
+            </div>
+            ${sum}
+            <ul class="items">${items}</ul>
+          </div>
+        </div>`;
+    }).join('');
+    
+    return `
+      <section class="entity">
+        <h2 class="entity__t">${esc(e.name)}</h2>
+        ${cards}
+      </section>`;
+  }).join('');
 }
 
 /** =============================================
- *  HTML Generation
+ *  Build Pipeline (unchanged)
+ *  ============================================= */
+async function buildData() {
+  const todayKey = new Date()
+    .toLocaleDateString("ro-RO", { timeZone: CONFIG.misc.timezone })
+    .replaceAll(".", "-");
+  const cacheFile = path.join(CONFIG.paths.cacheDir, `report-${todayKey}.json`);
+
+  await fs.promises.mkdir(CONFIG.paths.cacheDir, { recursive: true });
+  if (fs.existsSync(cacheFile)) {
+    console.log("✓ Using cached report for today");
+    const cached = JSON.parse(await fs.promises.readFile(cacheFile, "utf-8"));
+    return cached;
+  }
+
+  console.log("\n🚀 Starting report generation...\n");
+  const logs = { fetched: {}, filtered: {}, gpt_filtered: {}, deduped: {}, final: {} };
+
+  console.log("📡 Step 1/4: Fetching from all RSS feeds...");
+  const pools = {};
+  const fetchPromises = ENTITY_ORDER.map(async (name) => {
+    const raw = await fetchEntityPool(name);
+    logs.fetched[name] = raw;
+    pools[name] = raw;
+    console.log(`  ✓ ${name}: ${raw.length} articles`);
+  });
+  await Promise.all(fetchPromises);
+
+  console.log("\n🔍 Step 2/4: Filtering and deduplicating...");
+  for (const name of ENTITY_ORDER) {
+    const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
+    let filtered = [];
+    if (name === "Campanie București") {
+      filtered = arr.filter(looksRomanianArticle).filter((it) => looksElectionRelated2025(it) && hasCampaignCandidateKeywords2025(it));
+    } else if (name === "Local (Primării)") {
+      filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
+    } else {
+      filtered = arr.filter(looksRomanianArticle);
+    }
+    filtered = enforcePoliticalRules(name, filtered);
+    logs.filtered[name] = filtered.length;
+
+    const gptFiltered = await gptFilterForEntity(name, filtered);
+    logs.gpt_filtered[name] = gptFiltered.length;
+
+    const ded = await dedupe(gptFiltered);
+    logs.deduped[name] = ded.length;
+    pools[name] = ded.slice(0, CONFIG.filters.maxArticlesPerEntity);
+    console.log(`  ✓ ${name}: ${arr.length} → ${filtered.length} → ${gptFiltered.length} → ${ded.length} articles`);
+  }
+
+  console.log("\n🗂️  Step 3/4: Clustering articles...");
+  const entities = [];
+  for (const name of ENTITY_ORDER) {
+    const items = pools[name] || [];
+    if (!items.length) {
+      console.log(`  ⊘ ${name}: No articles`);
+      continue;
+    }
+
+    console.log(`  Processing ${name}...`);
+    const clusters = await bunchForEntity(name, items);
+    console.log(`    Found ${clusters.length} clusters`);
+
+    const subjects = [];
+    for (const [idx, cl] of clusters.entries()) {
+      const subset = cl.indices.map((i) => items[i]).filter(Boolean).slice(0, 5);
+      if (subset.length === 0) continue;
+
+      const { title, summary } = await titleAndSummaryFor(subset);
+
+      subjects.push({
+        label: cl.label || title || `Subiect ${subjects.length + 1}`,
+        titlu_ro: title,
+        sumar_ro: summary,
+        items: subset,
+      });
+      console.log(`    ✓ Cluster ${idx + 1}: ${subset.length} articles`);
+    }
+    entities.push({ name, subjects });
+  }
+
+  console.log("\n🔧 Post-processing: collapsing cross-entity topics (URL union)...");
+  crossEntityCollapseURLUnion(entities);
+
+  console.log("🤖 Extra pass: GPT merge of subjects across entities...");
+  await crossEntityGPTCollapse(entities);
+
+  entities.sort((a, b) => ENTITY_ORDER.indexOf(a.name) - ENTITY_ORDER.indexOf(b.name));
+
+  console.log("\n💾 Step 4/4: Saving results...");
+  const report = { generatedAt: new Date().toISOString(), timezone: CONFIG.misc.timezone, entities };
+  logs.final.report = report;
+
+  await fs.promises.mkdir(CONFIG.paths.outDir, { recursive: true });
+  await fs.promises.writeFile(OUT_JSON, JSON.stringify(report, null, 2));
+  await fs.promises.writeFile(LOGS_JSON, JSON.stringify(logs, null, 2));
+  await fs.promises.writeFile(cacheFile, JSON.stringify(report, null, 2));
+  console.log(`  ✓ Saved to ${OUT_JSON}`);
+  console.log(`  ✓ Logs saved to ${LOGS_JSON}`);
+  console.log(`  ✓ Cached to ${cacheFile}`);
+
+  // Generate WordPress fragment if enabled
+  if (CONFIG.wordpress.generateFragment) {
+    const fragmentHtml = wordpressFragmentHTML({ report });
+    await fs.promises.writeFile(OUT_WORDPRESS, fragmentHtml, 'utf-8');
+    console.log(`  ✓ WordPress fragment saved to ${OUT_WORDPRESS}`);
+  }
+
+  console.log("\n✅ Report generation complete!\n");
+  return report;
+}
+
+/** =============================================
+ *  HTML Generation (unchanged)
  *  ============================================= */
 function esc(s) {
   return he.encode(String(s || ""), { useNamedReferences: true });
@@ -1117,28 +1484,39 @@ function getAnalyticsTag(id) {
 </script>`;
 }
 
-function getMinimalStyles() {
-  return `<style>
+function getStylesAndFonts() {
+  return `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
 :root{
   --ink:#0a0a0a;
   --bg:#ffffff;
   --muted:#4b5563;
+  --line:#0a0a0a;
   --accent:#ffd400;
+  --accent-ink:#0a0a0a;
   --max:1200px;
 }
-*{box-sizing:border-box;margin:0;padding:0}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
 body{
   font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
   color:var(--ink);background:var(--bg);line-height:1.6;
 }
+.header{position:sticky;top:0;z-index:10;background:var(--accent);border-bottom:2px solid var(--ink)}
+.header__in{max-width:var(--max);margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand__badge{display:inline-grid;place-items:center;width:32px;height:32px;background:var(--ink);color:var(--accent);font:700 16px/1 Space Grotesk,Inter,sans-serif;border-radius:4px}
+.brand__t{font:800 22px/1 Space Grotesk,Inter,sans-serif;letter-spacing:-0.02em}
+.when{font-weight:600;font-size:13px}
+.header__right a{font-size:22px;text-decoration:none}
 .wrap{max-width:var(--max);margin:0 auto;padding:20px}
-
-/* Section label (entity) */
-.entity{margin:24px 0 36px}
+.entity{margin:12px 0 36px}
 .entity__t{
   display:inline-block;
   background:var(--accent);
-  color:#0a0a0a;
+  color:var(--accent-ink);
   padding:6px 10px;
   border:2px solid var(--ink);
   font:800 18px/1 Space Grotesk,Inter,sans-serif;
@@ -1146,35 +1524,28 @@ body{
   text-transform:uppercase;
   margin:0 0 14px;
 }
-
-/* Story card */
 .card{
   border-bottom:2px solid var(--ink);
-  padding:18px 0;
+  padding:18px 16px;
   margin:0 0 12px 0;
   position:relative;
+  display:grid;
+  grid-template-columns:1fr 280px;
+  gap:20px;align-items:start;background:#fff;
 }
 .card::before{
   content:""; position:absolute; left:0; top:0; bottom:0; width:10px;
   background:linear-gradient(180deg,var(--accent) 0%,var(--accent) 100%);
 }
-.card__thumbnail{
-  margin-bottom:12px;
+.card:first-child{
+  grid-template-columns:1.2fr 1fr;
+  padding-top:22px;padding-bottom:22px;
 }
-.card__thumbnail img{
-  max-width:100%;
-  height:auto;
-  display:block;
-  border:2px solid var(--ink);
-  background:#f5f5f5;
-}
-.thumbnail-source{
-  font-size:11px;
-  color:var(--muted);
-  margin-top:4px;
-  font-style:italic;
-}
-.card__t{font:800 24px/1.15 Space Grotesk,Inter,sans-serif;margin:0 0 8px;letter-spacing:-0.01em}
+.card__body{min-width:0}
+.card__head{display:flex;align-items:center;gap:10px;margin:0 0 8px}
+.pill{display:none}
+.card__t{font:800 26px/1.15 Space Grotesk,Inter,sans-serif;margin:0;letter-spacing:-0.01em}
+.card:first-child .card__t{font-size:30px}
 .sub__sum{font-size:16px;color:var(--muted);margin:8px 0 12px;line-height:1.5}
 .items{margin:0;padding:0;list-style:none}
 .items li{
@@ -1198,59 +1569,101 @@ body{
 }
 .items a:hover{box-shadow:inset 0 -2px 0 var(--ink);border-bottom-color:var(--ink)}
 .items .src{
-  display:inline-block;
-  margin-left:4px;
-  font-size:11px;
-  padding:1px 6px;
-  border:1.5px solid var(--ink);
-  border-radius:999px;
-  background:#fff;
-  flex-shrink:0;
+  display:inline-block;margin-left:4px;font-size:11px;
+  padding:1px 6px;border:1.5px solid var(--ink);border-radius:999px;background:#fff;
 }
-
-/* Source footer */
-.source-footer{
-  margin:40px 0 20px;
-  padding:20px 0;
-  border-top:2px solid var(--ink);
-  text-align:center;
-  font-size:13px;
+.card__media{width:280px;flex-shrink:0;display:flex;flex-direction:column;gap:6px}
+.card__img{width:100%;height:180px;object-fit:cover;border:2px solid var(--ink);border-radius:6px}
+.photo-credit{font-size:11px;color:#555;margin-top:4px}
+.footer{max-width:var(--max);margin:40px auto 20px;padding:20px;border-top:2px solid var(--ink);text-align:center;font-size:13px;color:#111}
+.footer a{color:inherit}
+@media (max-width:900px){
+  .card{grid-template-columns:1fr}
+  .card__media{width:100%;order:-1}
+  .card__img{height:200px}
+  .card:first-child{grid-template-columns:1fr}
+  .card__t{font-size:24px}
 }
-.source-footer a{
-  color:var(--ink);
-  text-decoration:none;
-  border-bottom:1px solid var(--accent);
-}
-.source-footer a:hover{
-  border-bottom:2px solid var(--ink);
-}
-
-/* Mobile-friendly improvements */
-@media (max-width: 900px){
-  .wrap{padding:15px}
-  .card__t{font-size:20px}
-  .entity__t{font-size:16px}
-}
-
-@media (max-width: 600px){
-  .card__t{font-size:18px;line-height:1.2}
-  .sub__sum{font-size:15px}
-  .items li{font-size:13px;flex-direction:column;align-items:flex-start;gap:4px}
-  .items .src{margin-left:0;margin-top:2px}
-  .card__thumbnail img{border-width:1px}
-}
-
-/* Debug info */
-.debug-info {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  padding: 10px;
-  margin: 10px 0;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: monospace;
+@media print{
+  body{background:#fff}
+  .header{position:static}
+  .entity{page-break-inside:avoid}
 }
 </style>`;
+}
+
+function getHeader(when) {
+  const coffeeURL = "https://www.revolut.me/haurbalaur/";
+  return `<header class="header" role="banner">
+  <div class="header__in">
+    <div class="brand" aria-label="brand header">
+      <span class="brand__badge">CP</span>
+      <div class="brand__t">CONTEXTPOLITICO.ro</div>
+    </div>
+    <div class="when">${esc(when)}</div>
+    <div class="header__right">
+      <a href="${coffeeURL}" target="_blank" rel="noopener" title="dă și tu o cafea">☕</a>
+    </div>
+  </div>
+</header>`;
+}
+
+function getScripts(report) {
+  return `<script id="__STATE__" type="application/json">${JSON.stringify(report)}</script>
+<script>
+(function(){
+var raw = document.getElementById("__STATE__").textContent;
+var state;
+try { state = JSON.parse(raw); }
+catch(e) { state = { generatedAt: new Date().toISOString(), timezone: "Europe/Bucharest", entities: [] }; }
+
+var content = document.getElementById("content");
+var fmtDomain = function(u){ try{return new URL(u).hostname.replace(/^www\\./,"");}catch{return ""} };
+var slugId = function(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9-ăâîșț ]/gi,"-").replace(/\\s+/g,"-").replace(/-+/g,"-"); };
+
+function pickBestThumb(items) {
+  if (!items || !items.length) return null;
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var img = it.thumbnail || "";
+    if (img && typeof img === "string" && img.length > 8 && !/logo|sprite|icon|avatar/i.test(img)) {
+      return { src: img, domain: fmtDomain(it.link||"") };
+    }
+  }
+  return null;
+}
+
+function render(){
+  var out = (state.entities||[]).map(function(e,ei){
+    var subs = (e.subjects||[]);
+    if(!subs.length){ return ""; }
+    var cards = subs.map(function(s,si){
+      var items = (s.items||[]).slice(0,5).map(function(it,ii){
+        return "<li><a href=\\"" + it.link + "\\" target=\\"_blank\\" rel=\\"noopener\\">" + it.title + "</a><span class=\\"src\\">" + fmtDomain(it.link) + "</span></li>";
+      }).join("");
+      var sum = s.sumar_ro ? "<p class=\\"sub__sum\\">" + s.sumar_ro + "</p>" : "";
+      var thumb = pickBestThumb(s.items);
+      var mediaHtml = "";
+      if (thumb) {
+        mediaHtml = '<div class="card__media"><img class="card__img" src="' + thumb.src + '" alt="thumbnail" loading="lazy"/><div class="photo-credit">Sursa: ' + thumb.domain + '</div></div>';
+      }
+      return "<div class=\\"card\\"><div class=\\"card__body\\"><div class=\\"card__head\\"><div class=\\"pill\\"></div><h3 class=\\"card__t\\">" + (s.titlu_ro||s.label||"Subiect") + "</h3></div>" + sum + "<ul class=\\"items\\">" + items + "</ul></div>" + mediaHtml + "</div>";
+    }).join("");
+    return "<section id=\\"" + slugId(e.name) + "\\" class=\\"entity\\"><h2 class=\\"entity__t\\">" + e.name + "</h2>" + cards + "</section>";
+  }).join("");
+  content.innerHTML = out;
+}
+render();
+})();
+</script>`;
+}
+
+function getFooter() {
+  const coffeeURL = "https://www.revolut.me/haurbalaur/";
+  const contactURL = "mailto:mihnead@pm.me";
+  return `<footer class="footer">
+  <p>(c)2025 contextpolitic.ro este o platforma generata cu AI din titlurile zilei si este oferita gratuit in perioada campaniei pentru informare generala | <a href="${coffeeURL}" target="_blank" rel="noopener">da si tu o cafea</a> | <a href="${contactURL}">contacteaza autorul</a></p>
+</footer>`;
 }
 
 function baseHTML({ report }) {
@@ -1261,9 +1674,6 @@ function baseHTML({ report }) {
     timeStyle: "short",
   });
 
-  const contentHtml = generateContentHTML(report, when);
-  const sourceFooter = generateSourceFooter();
-
   return `<!doctype html>
 <html lang="ro">
 <head>
@@ -1271,223 +1681,17 @@ function baseHTML({ report }) {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>CONTEXTPOLITIC.ro — ${esc(when)}</title>
 ${getAnalyticsTag(CONFIG.analytics.ga4)}
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-${getMinimalStyles()}
+${getStylesAndFonts()}
 </head>
 <body>
-<main class="wrap">
-  <div class="content">
-    ${contentHtml}
-    <!-- DEBUG INFO -->
-    <div class="debug-info">
-      <strong>Debug Info:</strong><br>
-      Generated at: ${esc(when)}<br>
-      Total entities: ${report.entities?.length || 0}
-    </div>
-  </div>
-  ${sourceFooter}
+${getHeader(when)}
+<main class="wrap" id="app-root">
+  <div class="content" id="content"></div>
 </main>
+${getFooter()}
+${getScripts(report)}
 </body>
 </html>`;
-}
-
-function generateContentHTML(report, when) {
-  const entities = report.entities || [];
-  
-  // DEBUG: Check if we have any entities
-  if (!entities.length) {
-    return `<div class="debug-info">
-      <strong>NO ENTITIES FOUND</strong><br>
-      This usually means:<br>
-      1. No articles passed the date filter (withinLast24h)<br>
-      2. No articles passed the content filters (looksRomanianArticle, localRoleCityPass)<br>
-      3. All RSS feeds returned empty or failed
-    </div>`;
-  }
-  
-  return entities.map(e => {
-    const subs = e.subjects || [];
-    
-    // DEBUG: Show entity info
-    let debugInfo = `<div class="debug-info">Entity: ${esc(e.name)} | Subjects: ${subs.length}</div>`;
-    
-    if (!subs.length) {
-      return debugInfo + `<div class="debug-info">No subjects for ${esc(e.name)}</div>`;
-    }
-    
-    const cards = subs.map((s, idx) => {
-      const items = (s.items || []).slice(0, 5).map(it => 
-        `<li>
-          <a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a>
-          <span class="src">${esc(domainOf(it.link))}</span>
-        </li>`
-      ).join('');
-      
-      const sum = s.sumar_ro ? `<p class="sub__sum">${esc(s.sumar_ro)}</p>` : '';
-      
-      // Thumbnail with source attribution
-      const thumbnailHtml = s.thumbnail ? 
-        `<div class="card__thumbnail">
-           <img src="${esc(s.thumbnail)}" alt="Thumbnail" loading="lazy">
-           <p class="thumbnail-source">sursa: ${esc(s.thumbnailSource || '')}</p>
-         </div>` : '<!-- No thumbnail -->';
-      
-      return `
-        <div class="card">
-          ${thumbnailHtml}
-          <div class="card__body">
-            <h3 class="card__t">${esc(s.titlu_ro || s.label || 'Subiect')}</h3>
-            ${sum}
-            <ul class="items">${items}</ul>
-          </div>
-        </div>`;
-    }).join('');
-    
-    return `
-      <section class="entity">
-        <h2 class="entity__t">${esc(e.name)}</h2>
-        ${cards}
-      </section>`;
-  }).join('');
-}
-
-/** =============================================
- *  Build Pipeline
- *  ============================================= */
-async function buildData() {
-  const todayKey = new Date()
-    .toLocaleDateString("ro-RO", { timeZone: CONFIG.misc.timezone })
-    .replaceAll(".", "-");
-  const cacheFile = path.join(CONFIG.paths.cacheDir, `report-${todayKey}.json`);
-
-  await fs.promises.mkdir(CONFIG.paths.cacheDir, { recursive: true });
-  if (fs.existsSync(cacheFile)) {
-    console.log("✓ Using cached report for today");
-    const cached = JSON.parse(await fs.promises.readFile(cacheFile, "utf-8"));
-    return cached;
-  }
-
-  console.log("\n🚀 Starting report generation...");
-  const logs = { fetched: {}, filtered: {}, gpt_filtered: {}, deduped: {}, final: {} };
-
-  console.log("\n📡 Step 1/4: Fetching from all RSS feeds...");
-  const pools = {};
-  const fetchPromises = ENTITY_ORDER.map(async (name) => {
-    console.log(`  Fetching pool for: ${name}`);
-    const raw = await fetchEntityPool(name);
-    logs.fetched[name] = raw;
-    pools[name] = raw;
-    console.log(`  ✓ ${name}: ${raw.length} articles`);
-  });
-  await Promise.all(fetchPromises);
-
-  console.log("\n🔍 Step 2/4: Filtering and deduplicating...");
-  for (const name of ENTITY_ORDER) {
-    const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
-    console.log(`  ${name}: ${arr.length} items after date filter`);
-    
-    let filtered = [];
-    if (name === "local") {
-      filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
-    } else {
-      filtered = arr.filter(looksRomanianArticle);
-    }
-    console.log(`  ${name}: ${filtered.length} items after content filters`);
-    
-    filtered = enforcePoliticalRules(name, filtered);
-    logs.filtered[name] = filtered.length;
-
-    const gptFiltered = await gptFilterForEntity(name, filtered);
-    logs.gpt_filtered[name] = gptFiltered.length;
-
-    const ded = await dedupe(gptFiltered);
-    logs.deduped[name] = ded.length;
-    pools[name] = ded.slice(0, CONFIG.filters.maxArticlesPerEntity);
-    console.log(`  ✓ ${name}: ${arr.length} → ${filtered.length} → ${gptFiltered.length} → ${ded.length} articles`);
-  }
-
-  console.log("\n🗂️  Step 3/4: Clustering articles...");
-  const entities = [];
-  for (const name of ENTITY_ORDER) {
-    const items = pools[name] || [];
-    if (!items.length) {
-      console.log(`  ⊘ ${name}: No articles`);
-      continue;
-    }
-
-    console.log(`  Processing ${name}... (${items.length} items)`);
-    const clusters = await bunchForEntity(name, items);
-    console.log(`    Found ${clusters.length} clusters`);
-
-    const subjects = [];
-    for (const [idx, cl] of clusters.entries()) {
-      const subset = cl.indices.map((i) => items[i]).filter(Boolean).slice(0, 5);
-      if (subset.length === 0) {
-        console.log(`    Cluster ${idx} has no items, skipping`);
-        continue;
-      }
-
-      const { title, summary } = await titleAndSummaryFor(subset);
-      
-      // Pick thumbnail from first article that has one
-      const thumbnailItem = subset.find(item => item.thumbnail) || subset[0];
-      const thumbnail = thumbnailItem?.thumbnail || null;
-      const thumbnailSource = thumbnailItem?.source || '';
-
-      subjects.push({
-        label: cl.label || title || `Subiect ${subjects.length + 1}`,
-        titlu_ro: title,
-        sumar_ro: summary,
-        items: subset,
-        thumbnail,
-        thumbnailSource,
-      });
-      console.log(`    ✓ Cluster ${idx + 1}: ${subset.length} articles${thumbnail ? ' (with thumbnail)' : ''}`);
-    }
-    
-    if (subjects.length > 0) {
-      entities.push({ name, subjects });
-      console.log(`  ✓ ${name}: ${subjects.length} subjects created`);
-    } else {
-      console.log(`  ⊘ ${name}: No subjects created from clusters`);
-    }
-  }
-
-  console.log("\n🔧 Post-processing: collapsing cross-entity topics (URL union)...");
-  crossEntityCollapseURLUnion(entities);
-
-  console.log("🤖 Extra pass: GPT merge of subjects across entities...");
-  await crossEntityGPTCollapse(entities);
-
-  entities.sort((a, b) => ENTITY_PRIORITY.indexOf(a.name) - ENTITY_ORDER.indexOf(b.name));
-
-  console.log("\n💾 Step 4/4: Saving results...");
-  const report = { 
-    generatedAt: new Date().toISOString(), 
-    timezone: CONFIG.misc.timezone, 
-    entities,
-    stats: {
-      totalEntities: entities.length,
-      totalSubjects: entities.reduce((sum, e) => sum + (e.subjects?.length || 0), 0),
-      totalArticles: entities.reduce((sum, e) => sum + (e.subjects?.reduce((sSum, s) => sSum + (s.items?.length || 0), 0) || 0), 0)
-    }
-  };
-  logs.final.report = report;
-
-  await fs.promises.mkdir(CONFIG.paths.outDir, { recursive: true });
-  await fs.promises.writeFile(OUT_JSON, JSON.stringify(report, null, 2));
-  await fs.promises.writeFile(LOGS_JSON, JSON.stringify(logs, null, 2));
-  await fs.promises.writeFile(cacheFile, JSON.stringify(report, null, 2));
-  console.log(`  ✓ Saved to ${OUT_JSON}`);
-  console.log(`  ✓ Logs saved to ${LOGS_JSON}`);
-  console.log(`  ✓ Cached to ${cacheFile}`);
-
-  console.log("\n✅ Report generation complete!");
-  console.log(`📊 Stats: ${report.stats.totalEntities} entities, ${report.stats.totalSubjects} subjects, ${report.stats.totalArticles} articles`);
-  
-  return report;
 }
 
 /** =============================================
@@ -1497,24 +1701,16 @@ async function run() {
   try {
     validateEnv();
     const report = await buildData();
-    
-    // DEBUG: Log report stats
-    console.log("\n📊 FINAL REPORT STATS:");
-    console.log(`Entities: ${report.entities?.length || 0}`);
-    report.entities?.forEach(e => {
-      console.log(`  ${e.name}: ${e.subjects?.length || 0} subjects`);
-    });
-    
     const html = baseHTML({ report });
     await fs.promises.mkdir(CONFIG.paths.outDir, { recursive: true });
     await fs.promises.writeFile(OUT_HTML, html, "utf-8");
-    console.log(`\n✅ SUCCESS: ${OUT_HTML} written`);
-    
-    const stats = await fs.promises.stat(OUT_HTML);
-    console.log(`📊 File size: ${stats.size} bytes`);
-    
+    console.log(`\n✅ Successfully wrote: ${OUT_HTML}`);
+    console.log(`📊 Report statistics:`);
+    console.log(`   - Total entities: ${report.entities.length}`);
+    console.log(`   - Total subjects: ${report.entities.reduce((sum, e) => sum + e.subjects.length, 0)}`);
+    console.log(`   - Total articles: ${report.entities.reduce((sum, e) => sum + e.subjects.reduce((s, sub) => s + sub.items.length, 0), 0)}`);
   } catch (err) {
-    console.error("\n❌ FATAL ERROR:", err.message);
+    console.error("\n❌ Fatal error:", err.message);
     console.error(err.stack);
     process.exit(1);
   }
