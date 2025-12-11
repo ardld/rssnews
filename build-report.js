@@ -37,7 +37,8 @@ const CONFIG = {
   analytics: { ga4: process.env.GA_MEASUREMENT_ID || "G-Z3SMLP8TGS" },
   rss: {
     feeds: [
-      "https://news.yam.ro/ro/rss",
+      "https://b365.ro/feed/",
+      "https://www.digi24.ro/rss",
       "https://hotnews.ro/c/actualitate/feed",
       "https://www.g4media.ro/feed",
       "https://libertatea.ro/feed/",
