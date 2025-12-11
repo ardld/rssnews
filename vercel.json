@@ -1,0 +1,27 @@
+{
+  "buildCommand": "node build-report.js",
+  "outputDirectory": "public",
+  "functions": {
+    "api/cron.js": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "30 7 * * *"
+    },
+    {
+      "path": "/api/cron",
+      "schedule": "30 13 * * *"
+    },
+    {
+      "path": "/api/cron",
+      "schedule": "30 19 * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/api/cron", "destination": "/api/cron.js" }
+  ]
+}
