@@ -1,0 +1,19 @@
+{
+  "name": "contextpolitic",
+  "version": "1.0.0",
+  "description": "AI-powered Romanian political news aggregator",
+  "type": "module",
+  "scripts": {
+    "build": "node build-report.js",
+    "dev": "node build-report.js && npx serve public"
+  },
+  "keywords": ["romania", "politics", "news", "ai"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "he": "^1.2.0",
+    "jaro-winkler": "^0.2.8",
+    "openai": "^4.77.4"
+  }
+}
