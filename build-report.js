@@ -577,7 +577,6 @@ async function gptFilterForEntity(entityName, items) {
 CRITERII DE PĂSTRARE:
 - Articolul menționează explicit entitatea sau persoane/instituții cheie din categorie.
 - Articolul este despre acțiuni, declarații sau evenimente cu impact asupra entității.
-- Ce ține de instituții ale statului aparține stirct secțiunii GUVERN
 
 CRITERII DE ELIMINARE (STRICTĂ):
 - Elimină DOAR știrile EVIDENT irelevante: reclame, sport, monden, anunțuri imobiliare, sau știri despre alte localități fără legătură.
