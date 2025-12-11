@@ -16,7 +16,7 @@ const CONFIG = {
     retryDelay: 1000,
   },
   llm: {
-    model: "gpt-5.1", // Changed to gpt-5.1
+    model: "gpt-5.1",
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
     maxTokens: 3000,
@@ -254,7 +254,6 @@ function localRoleCityPass(item) {
 }
 
 // --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere")
-//     + treat government people/roles as "power" to prevent leaks into Opoziție
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
   "moșteanu", "mosteanu", "liviu-ionut mosteanu", "ionut mosteanu",
@@ -290,7 +289,6 @@ const ENTITY_ORDER = [
   "Parlament",
   "Coaliție (Putere)",
   "Opoziție",
-  // "Campanie București", // REMOVED
   "Local (Primării)",
 ];
 
@@ -343,7 +341,6 @@ const QUERIES = {
     "Anamaria Gavrilă",
     "Anamaria Gavrila",
   ],
-  // REMOVED "Campanie București"
   "Local (Primării)": ["primar OR primăria OR consiliu județean OR CJ OR prefect"],
 };
 
@@ -727,7 +724,6 @@ const ENTITY_PRIORITY = [
   "Parlament",
   "Coaliție (Putere)",
   "Opoziție",
-  // REMOVED "Campanie București"
   "Local (Primării)",
 ];
 
@@ -739,7 +735,6 @@ function scoreOwner(allText) {
   scores.set("Președinție", score(/\bpresedinte|presedintie|cotroceni|nicusor\s+dan\b/g));
   scores.set("Guvern", score(/\bpremier|guvern|ministru|ministerul|ministra\b/g));
   scores.set("Parlament", score(/\bparlament|senat|camera\s+deputatilor\b/g));
-  // REMOVED Campanie București score
   scores.set("Local (Primării)", score(/\bprimar|primaria|consiliu\s+jude?tean|cj\b/g));
   scores.set("Coaliție (Putere)", score(/\bpsd|pnl|udmr|usr|coalit/g));
   scores.set("Opoziție", score(/\baur\b|\bsos\s+romania\b/g));
@@ -845,7 +840,7 @@ function crossEntityCollapseURLUnion(entities) {
   return entities;
 }
 
-/** GPT pass to merge subjects across entities even when URLs differ (e.g., same "Mark Rutte în România" story) */
+/** GPT pass to merge subjects across entities even when URLs differ */
 async function crossEntityGPTCollapse(entities) {
   if (!openai) return entities;
 
@@ -998,7 +993,6 @@ async function buildData() {
   for (const name of ENTITY_ORDER) {
     const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
     let filtered = [];
-    // REMOVED Campanie București condition
     if (name === "Local (Primării)") {
       filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
     } else {
@@ -1071,7 +1065,7 @@ async function buildData() {
 }
 
 /** =============================================
- *  HTML Generation (Semafor + Ground News vibes)
+ *  HTML Generation
  *  ============================================= */
 function esc(s) {
   return he.encode(String(s || ""), { useNamedReferences: true });
@@ -1095,12 +1089,12 @@ function getStylesAndFonts() {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --ink:#0a0a0a;
-  --bg:#ffffff;
-  --muted:#4b5563;
-  --line:#0a0a0a;
-  --accent:#ffd400;        /* Semafor yellow */
-  --accent-ink:#0a0a0a;
+  --ink:#1a1a1a;
+  --bg:#fafafa;
+  --muted:#6b7280;
+  --line:#e5e7eb;
+  --accent:#005a95;        /* Professional political blue */
+  --accent-ink:#ffffff;
   --max:1200px;
 }
 *{box-sizing:border-box}
@@ -1110,61 +1104,48 @@ body{
   color:var(--ink);background:var(--bg);line-height:1.6;
 }
 
-/* Masthead */
-.header{position:sticky;top:0;z-index:10;background:var(--accent);border-bottom:2px solid var(--ink)}
-.header__in{max-width:var(--max);margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:12px 20px}
-.brand{display:flex;align-items:center;gap:12px}
-.brand__badge{display:inline-grid;place-items:center;width:32px;height:32px;background:var(--ink);color:var(--accent);font:700 16px/1 Space Grotesk,Inter,sans-serif;border-radius:4px}
-.brand__t{font:800 22px/1 Space Grotesk,Inter,sans-serif;letter-spacing:-0.02em}
-.when{font-weight:600;font-size:13px}
-.header__right a{font-size:22px;text-decoration:none}
-
 /* Page container */
-.wrap{max-width:var(--max);margin:0 auto;padding:20px}
+.wrap{max-width:var(--max);margin:0 auto;padding:40px 20px}
 
 /* Section label (entity) */
-.entity{margin:12px 0 36px}
+.entity{margin:40px 0 32px}
 .entity__t{
   display:inline-block;
   background:var(--accent);
   color:var(--accent-ink);
-  padding:6px 10px;
-  border:2px solid var(--ink);
-  font:800 18px/1 Space Grotesk,Inter,sans-serif;
+  padding:8px 16px;
+  font:800 16px/1 Space Grotesk,Inter,sans-serif;
   letter-spacing:.02em;
   text-transform:uppercase;
-  margin:0 0 14px;
+  margin:0 0 16px;
+  border-radius:4px;
 }
 
-/* Story card (Ground News-ish stacked summaries) */
+/* Story card */
 .card{
-  border-bottom:2px solid var(--ink);
-  padding:18px 16px;
-  margin:0 0 12px 0;
+  border-bottom:1px solid var(--line);
+  padding:24px 0;
+  margin:0 0 16px 0;
   position:relative;
   display:grid;
   grid-template-columns:1fr 280px;
-  gap:20px;align-items:start;background:#fff;
-}
-.card::before{
-  content:""; position:absolute; left:0; top:0; bottom:0; width:10px;
-  background:linear-gradient(180deg,var(--accent) 0%,var(--accent) 100%);
+  gap:24px;align-items:start;background:transparent;
 }
 .card:first-child{
   grid-template-columns:1.2fr 1fr;
-  padding-top:22px;padding-bottom:22px;
+  padding-top:28px;padding-bottom:28px;
 }
 .card__body{min-width:0}
-.card__head{display:flex;align-items:center;gap:10px;margin:0 0 8px}
+.card__head{display:flex;align-items:center;gap:10px;margin:0 0 12px}
 .pill{display:none}
-.card__t{font:800 26px/1.15 Space Grotesk,Inter,sans-serif;margin:0;letter-spacing:-0.01em}
-.card:first-child .card__t{font-size:30px}
-.sub__sum{font-size:16px;color:var(--muted);margin:8px 0 12px;line-height:1.5}
+.card__t{font:800 24px/1.2 Space Grotesk,Inter,sans-serif;margin:0;letter-spacing:-0.01em}
+.card:first-child .card__t{font-size:28px}
+.sub__sum{font-size:16px;color:var(--muted);margin:12px 0 16px;line-height:1.5}
 .items{margin:0;padding:0;list-style:none}
 .items li{
-  margin:6px 0;
+  margin:8px 0;
   font-size:14px;
-  line-height:1.45;
+  line-height:1.5;
   display:flex;
   align-items:baseline;
   gap:8px;
@@ -1172,28 +1153,24 @@ body{
 .items a{
   color:inherit;
   text-decoration:none;
-  border-bottom:2px solid rgba(10,10,10,.15);
-  box-shadow:inset 0 -2px 0 rgba(10,10,10,.15);
-  transition:box-shadow .15s,border-color .15s;
-  white-space:nowrap;           /* force single line */
+  border-bottom:1px solid rgba(10,10,10,.1);
+  transition:border-color .15s;
+  white-space:nowrap;
   overflow:hidden;
-  text-overflow:ellipsis;       /* ellipsis at end */
+  text-overflow:ellipsis;
   max-width:100%;
 }
-.items a:hover{box-shadow:inset 0 -2px 0 var(--ink);border-bottom-color:var(--ink)}
+.items a:hover{border-bottom-color:var(--accent)}
 .items .src{
   display:inline-block;margin-left:4px;font-size:11px;
-  padding:1px 6px;border:1.5px solid var(--ink);border-radius:999px;background:#fff;
+  padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:#fff;
+  color:var(--muted);
 }
 
 /* Media */
 .card__media{width:280px;flex-shrink:0;display:flex;flex-direction:column;gap:6px}
-.card__img{width:100%;height:180px;object-fit:cover;border:2px solid var(--ink);border-radius:6px}
-.photo-credit{font-size:11px;color:#555;margin-top:4px}
-
-/* Footer */
-.footer{max-width:var(--max);margin:40px auto 20px;padding:20px;border-top:2px solid var(--ink);text-align:center;font-size:13px;color:#111}
-.footer a{color:inherit}
+.card__img{width:100%;height:180px;object-fit:cover;border:1px solid var(--line);border-radius:4px}
+.photo-credit{font-size:11px;color:var(--muted);margin-top:4px}
 
 /* Responsive */
 @media (max-width:900px){
@@ -1201,30 +1178,13 @@ body{
   .card__media{width:100%;order:-1}
   .card__img{height:200px}
   .card:first-child{grid-template-columns:1fr}
-  .card__t{font-size:24px}
+  .card__t{font-size:22px}
 }
 @media print{
   body{background:#fff}
-  .header{position:static}
   .entity{page-break-inside:avoid}
 }
 </style>`;
-}
-
-function getHeader(when) {
-  const coffeeURL = "https://www.revolut.me/haurbalaur/";
-  return `<header class="header" role="banner">
-  <div class="header__in">
-    <div class="brand" aria-label="brand header">
-      <span class="brand__badge">CP</span>
-      <div class="brand__t">CONTEXTPOLITIC.ro</div>
-    </div>
-    <div class="when">${esc(when)}</div>
-    <div class="header__right">
-      <a href="${coffeeURL}" target="_blank" rel="noopener" title="dă și tu o cafea">☕</a>
-    </div>
-  </div>
-</header>`;
 }
 
 function getScripts(report) {
@@ -1277,14 +1237,6 @@ render();
 </script>`;
 }
 
-function getFooter() {
-  const coffeeURL = "https://www.revolut.me/haurbalaur/";
-  const contactURL = "mailto:mihnead@pm.me";
-  return `<footer class="footer">
-  <p>(c)2025 contextpolitic.ro este o platforma generata cu AI din titlurile zilei si este oferita gratuit in perioada campaniei pentru informare generala | <a href="${coffeeURL}" target="_blank" rel="noopener">da si tu o cafea</a> | <a href="${contactURL}">contacteaza autorul</a></p>
-</footer>`;
-}
-
 function baseHTML({ report }) {
   const date = new Date(report.generatedAt);
   const when = date.toLocaleString("ro-RO", {
@@ -1303,11 +1255,9 @@ ${getAnalyticsTag(CONFIG.analytics.ga4)}
 ${getStylesAndFonts()}
 </head>
 <body>
-${getHeader(when)}
 <main class="wrap" id="app-root">
   <div class="content" id="content"></div>
 </main>
-${getFooter()}
 ${getScripts(report)}
 </body>
 </html>`;
