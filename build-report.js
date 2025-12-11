@@ -304,6 +304,8 @@ const QUERIES = {
     "ministerul",
     "ministrul",
     "ministra",
+    "guvernul",
+    "Bolojan",
   ],
   "Parlament": [
     "Parlamentul României",
@@ -343,7 +345,7 @@ const QUERIES = {
     "Anamaria Gavrilă",
     "Anamaria Gavrila",
   ],
-  "Local (Primării)": ["primar OR primăria OR consiliu județean OR CJ OR prefect"],
+  "Local (Primării)": ["primar OR primăria OR primarul"],
 };
 
 // Pre-process queries into keywords for RSS filtering
@@ -570,11 +572,12 @@ async function gptFilterForEntity(entityName, items) {
   const cacheKey = `filter:${entityName}:${items.length}`;
   return cachedLLMCall(cacheKey, async () => {
     const slim = items.map((it, i) => ({ i, title: it.title, snippet: (it.snippet || "").slice(0, 200) }));
-    const prompt = `FILTRARE ECHILIBRATĂ: Păstrează articolele relevante pentru entitatea "${entityName}" din România.
+    const prompt = `FILTRARE ECHILIBRATĂ: Păstrează articolele relevante pentru entitatea "${entityName}" din România. 
 
 CRITERII DE PĂSTRARE:
 - Articolul menționează explicit entitatea sau persoane/instituții cheie din categorie.
 - Articolul este despre acțiuni, declarații sau evenimente cu impact asupra entității.
+- Ce ține de instituții ale statului aparține stirct secțiunii GUVERN
 
 CRITERII DE ELIMINARE (STRICTĂ):
 - Elimină DOAR știrile EVIDENT irelevante: reclame, sport, monden, anunțuri imobiliare, sau știri despre alte localități fără legătură.
@@ -616,7 +619,7 @@ IMPORTANT: Folosește DOAR titlul și conținutul real al articolului pentru gru
 - Reclame sau conținut promovat
 - Orice alt zgomot HTML din pagină
 
-Concentrează-te doar pe conținutul articolului principal. Este despre același om sau lucru?
+Concentrează-te doar pe conținutul articolului principal. Este despre același om, acțiune sau lucru?
 
 Elimină near-duplicate. Întoarce top 3 clustere după diversitate outlet-uri și recență. Pentru fiecare cluster, selectează ≤5 itemi pe acela;i subiect. Răspunde STRICT în JSON, ca o listă de obiecte { "label": string, "indices": number[] } fără alt text.`;
 
@@ -1091,7 +1094,7 @@ function getStylesAndFonts() {
 <style>
 :root{
   --ink:#1a1a1a;
-  --bg:#fafafa;
+  --bg:#ffffff;
   --muted:#6b7280;
   --line:#e5e7eb;
   --accent:#005a95;        /* Professional political blue */
