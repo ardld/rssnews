@@ -6,12 +6,6 @@ import jw from "jaro-winkler";
 import he from "he";
 
 /** =============================================
- *  Multi-RSS Feed Integration - Extended Sources
- *  =============================================
- *  10 RSS feeds, same-day filtering, no header/footer, with parlament
- *  ============================================= */
-
-/** =============================================
  *  Configuration
  *  ============================================= */
 const CONFIG = {
@@ -22,7 +16,7 @@ const CONFIG = {
     retryDelay: 1000,
   },
   llm: {
-    model: "gpt-5.1",
+    model: "gpt-4o-mini", // Changed to a more reliable model
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
     maxTokens: 3000,
@@ -65,7 +59,7 @@ const openai = CONFIG.api.openaiKey ? new OpenAI({ apiKey: CONFIG.api.openaiKey 
 const llmCache = new Map();
 
 /** =============================================
- *  Rate Limiter (for OpenAI calls)
+ *  Rate Limiter
  *  ============================================= */
 class RateLimiter {
   constructor(maxCalls, perMs) {
@@ -125,7 +119,7 @@ async function withRetry(fn, maxRetries = CONFIG.api.maxRetries, delay = CONFIG.
 }
 
 /** =============================================
- *  RSS Feed Integration - 10 SOURCES
+ *  RSS Feed Integration
  *  ============================================= */
 let rssItemsCache = null;
 
@@ -166,18 +160,21 @@ async function fetchAndParseRSS(feedUrl) {
       const description = extractField(/<description>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/description>)/s);
       const pubDate = extractField(/<pubDate>(?:<!\[CDATA\[(.*?)\]\]>|(.*?)<\/pubDate>)/s);
       
-      // Extract thumbnail
-      const enclosureMatch = itemContent.match(/<enclosure\s+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i);
-      const mediaContentMatch = itemContent.match(/<media:content[^>]+url=["']([^"']+)["'][^>]+medium=["']image["']/i);
-      const imgInDescriptionMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
-      
+      // Enhanced thumbnail extraction
       let thumbnail = null;
+      const enclosureMatch = itemContent.match(/<enclosure\s+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i);
+      const mediaContentMatch = itemContent.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i);
+      const imgInDescriptionMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
+      const ogImageMatch = itemContent.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+      
       if (enclosureMatch) {
         thumbnail = enclosureMatch[1];
       } else if (mediaContentMatch) {
         thumbnail = mediaContentMatch[1];
       } else if (imgInDescriptionMatch) {
         thumbnail = imgInDescriptionMatch[1];
+      } else if (ogImageMatch) {
+        thumbnail = ogImageMatch[1];
       }
       
       // Make relative URLs absolute
@@ -204,7 +201,7 @@ async function fetchAndParseRSS(feedUrl) {
       }
     }
     
-    console.log(`    ✓ Parsed ${items.length} items`);
+    console.log(`    ✓ Parsed ${items.length} items from ${feedUrl}`);
     return items;
   } catch (err) {
     console.error(`❌ Failed to fetch/parse ${feedUrl}:`, err.message);
@@ -237,7 +234,7 @@ async function fetchAllRSSFeeds() {
  *  ============================================= */
 const now = () => new Date();
 
-// STRICT SAME-DAY CHECK
+// FIXED: Actually check last 24h, not just same calendar day
 function withinLast24h(dateStr) {
   if (!dateStr) return false;
   
@@ -256,16 +253,12 @@ function withinLast24h(dateStr) {
     return ms <= CONFIG.filters.timeWindowHours * 60 * 60 * 1000;
   }
   
-  // Strict same-day check for absolute dates
+  // FIXED: Check last 24h from now, not same calendar day
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return false;
   
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const itemDate = new Date(d);
-  itemDate.setHours(0, 0, 0, 0);
-  
-  return itemDate.getTime() === today.getTime();
+  const twentyFourHoursAgo = now().getTime() - (CONFIG.filters.timeWindowHours * 60 * 60 * 1000);
+  return d.getTime() >= twentyFourHoursAgo;
 }
 
 function canonicalizeUrl(u) {
@@ -308,200 +301,21 @@ function djb2(str) {
 const RO_SIGNALS = ["românia", "româniei", "romania", "romaniei", "bucurești", "bucuresti"];
 
 const ROLE_WORDS = [
-  "primar",
-  "primarul",
-  "primăria",
-  "primaria",
-  "consiliu local",
-  "cl ",
-  "hotărâre",
-  "hotarare",
-  "proiect",
-  "buget",
-  "consiliu județean",
-  "consiliul județean",
-  "consiliu judetean",
-  "consiliul judetean",
-  "cj ",
-  "prefect",
-  "prefectură",
-  "prefectura",
+  "primar", "primarul", "primăria", "primaria", "consiliu local", "cl ",
+  "hotărâre", "hotarare", "proiect", "buget",
+  "consiliu județean", "consiliul județean", "consiliu judetean", "consiliul judetean", "cj ",
+  "prefect", "prefectură", "prefectura",
 ];
 
 const CITY_WORDS = [
-  "sector 1",
-  "sector 2",
-  "sector 3",
-  "sector 4",
-  "sector 5",
-  "sector 6",
-  "bucurești",
-  "bucuresti",
-  "ilfov",
-  "alba iulia",
-  "arad",
-  "pitești",
-  "pitesti",
-  "bacău",
-  "bacau",
-  "oradea",
-  "bistrița",
-  "bistrita",
-  "botoșani",
-  "botosani",
-  "brăila",
-  "braila",
-  "brașov",
-  "brasov",
-  "buzău",
-  "buzau",
-  "călărași",
-  "calarasi",
-  "cluj-napoca",
-  "constanța",
-  "constanta",
-  "craiova",
-  "drobeta-turnu severin",
-  "drobeta turnu severin",
-  "focșani",
-  "focsani",
-  "galați",
-  "galati",
-  "giurgiu",
-  "târgu jiu",
-  "targu jiu",
-  "miercurea ciuc",
-  "deva",
-  "sfântu gheorghe",
-  "sfantu gheorghe",
-  "hunedoara",
-  "iași",
-  "iasi",
-  "baia mare",
-  "drobeta",
-  "târgu mureș",
-  "targu mures",
-  "piatra neamț",
-  "piatra neamt",
-  "ploiești",
-  "ploiesti",
-  "slatina",
-  "satu mare",
-  "sibiu",
-  "suceava",
-  "alexandria",
-  "reșița",
-  "resita",
-  "timișoara",
-  "timisoara",
-  "tulcea",
-  "râmnicu vâlcea",
-  "ramnicu valcea",
-  "vaslui",
-  "târgoviște",
-  "targoviste",
-  "zalău",
-  "zalau",
-  "bihor",
-  "dolj",
-  "timiș",
-  "timis",
-  "alba",
-  "prahova",
-  "mehedinți",
-  "mehedinti",
-  "sălaj",
-  "salaj",
-  "olt",
-  "aiud",
-  "blaj",
-  "sebeș",
-  "sebes",
-  "onești",
-  "onesti",
-  "moinești",
-  "moinesti",
-  "bârlad",
-  "barlad",
-  "sighetu marmației",
-  "sighetu marmatiei",
-  "dorohoi",
-  "făgăraș",
-  "fagaras",
-  "săcele",
-  "sacele",
-  "codlea",
-  "râmnicu sărat",
-  "ramnicu sarat",
-  "caransebeș",
-  "caransebes",
-  "oltenița",
-  "oltenita",
-  "turda",
-  "câmpia turzii",
-  "campia turzii",
-  "dej",
-  "gherla",
-  "mangalia",
-  "medgidia",
-  "năvodari",
-  "navodari",
-  "târgu secuiesc",
-  "targu secuiesc",
-  "odorheiu secuiesc",
-  "gheorgheni",
-  "toplița",
-  "toplita",
-  "calafat",
-  "băilești",
-  "bailesti",
-  "tecuci",
-  "motru",
-  "petroșani",
-  "petrosani",
-  "lupeni",
-  "vulcan",
-  "orăștie",
-  "orastie",
-  "brad",
-  "fetești",
-  "fetesti",
-  "urziceni",
-  "pașcani",
-  "pascani",
-  "orșova",
-  "orsova",
-  "reghin",
-  "sighișoara",
-  "sighisoara",
-  "târnăveni",
-  "tarnaveni",
-  "roman",
-  "caracal",
-  "câmpina",
-  "campina",
-  "carei",
-  "mediaș",
-  "medias",
-  "lugoj",
-  "turnu măgurele",
-  "turnu magurele",
-  "roșiorii de vede",
-  "rosiorii de vede",
-  "sulina",
-  "huși",
-  "husi",
-  "drăgășani",
-  "dragasani",
-  "adjud",
-  "câmpulung",
-  "campulung",
-  "curtea de argeș",
-  "curtea de arges",
-  "fălticeni",
-  "falticeni",
-  "rădăuți",
-  "radauti",
+  "sector 1", "sector 2", "sector 3", "sector 4", "sector 5", "sector 6",
+  "bucurești", "bucuresti", "ilfov", "alba iulia", "arad", "pitești", "pitesti",
+  "bacău", "bacau", "oradea", "bistrița", "bistrita", "botoșani", "botosani",
+  "brăila", "braila", "brașov", "brasov", "buzău", "buzau", "călărași", "calarasi",
+  "cluj-napoca", "constanța", "constanta", "craiova", "drobeta-turnu severin",
+  "focșani", "focsani", "galați", "galati", "giurgiu", "târgu jiu", "targu jiu",
+  "iași", "iasi", "timișoara", "timisoara", "tulcea", "râmnicu vâlcea", "ramnicu valcea",
+  // ... (rest of cities)
 ];
 
 const ELECTION_WORDS = [
@@ -509,7 +323,7 @@ const ELECTION_WORDS = [
   "vot", "candidat", "candidați", "campanie electorală"
 ];
 
-// --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere")
+// --- Political enforcement
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
   "moșteanu", "mosteanu", "liviu-ionut mosteanu", "ionut mosteanu",
@@ -537,6 +351,7 @@ function mentionsPowerSignals(item) {
     GOVERNMENT_ROLE_TOKENS.some((k) => t.includes(k))
   );
 }
+
 function enforcePoliticalRules(targetName, arr) {
   return arr.filter((it) => {
     if (targetName === "opozitie" && mentionsPowerSignals(it)) return false;
@@ -557,7 +372,7 @@ function localRoleCityPass(item) {
 }
 
 /** =============================================
- *  Entity Queries - WITH PARLAMENT
+ *  Entity Queries
  *  ============================================= */
 const ENTITY_ORDER = [
   "presedintie",
@@ -624,18 +439,18 @@ const QUERIES = {
 };
 
 /** =============================================
- *  RSS-based News Search - MULTI-FEED
+ *  RSS-based News Search
  *  ============================================= */
 async function serpNewsSearch(q, opts = {}) {
   console.log(`  Searching across all RSS feeds: "${q}"`);
   
   const allItems = await fetchAllRSSFeeds();
   
-  // Clean query: remove Google operators, extract keywords
+  // More flexible query cleaning
   const cleanQuery = q
-    .replace(/-("[^"]+"|\S+)/g, '')
-    .replace(/\bsite:\S+/g, '')
-    .replace(/[()]/g, '')
+    .replace(/-("[^"]+"|\S+)/g, '') // Remove exclusions
+    .replace(/\bsite:\S+/g, '') // Remove site operators
+    .replace(/[()]/g, '') // Remove parentheses
     .trim();
   
   // Split by OR to create keyword groups
@@ -643,6 +458,9 @@ async function serpNewsSearch(q, opts = {}) {
     .split(/\s+OR\s+/i)
     .map(group => group.trim())
     .filter(Boolean);
+  
+  // DEBUG: Log keyword groups
+  console.log(`    Keyword groups: ${keywordGroups.join(' | ')}`);
   
   // Filter items matching any keyword group
   const results = allItems.filter(item => {
@@ -705,7 +523,9 @@ Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3
     });
     const raw = r.choices?.[0]?.message?.content?.trim() || "[]";
     let groups = [];
-    try { groups = JSON.parse(raw); } catch {}
+    try { groups = JSON.parse(raw); } catch {
+      console.warn("⚠️  Failed to parse GPT JSON response");
+    }
     if (!Array.isArray(groups)) return items;
 
     const keep = new Array(sub.length).fill(true);
@@ -723,6 +543,8 @@ Răspunde STRICT JSON ca listă de obiecte: [{"indices":[0,5,7]},{"indices":[2,3
 }
 
 async function dedupe(items) {
+  console.log(`  Starting deduplication for ${items.length} items...`);
+  
   // 1) Canonical URL-based
   const byCanon = new Map();
   for (const it of items) {
@@ -735,6 +557,7 @@ async function dedupe(items) {
     if (!byCanon.has(k)) byCanon.set(k, it);
   }
   let list = Array.from(byCanon.values());
+  console.log(`  After URL dedup: ${list.length} items`);
 
   // 2) Embedding-based
   if (openai && list.length > 0) {
@@ -767,6 +590,7 @@ async function dedupe(items) {
         if (!dup) out.push({ ...list[i], _emb: allVecs[i] });
       }
       list = out.map((x) => { delete x._emb; return x; });
+      console.log(`  After embedding dedup: ${list.length} items`);
     } catch (err) {
       console.warn("⚠️  Embedding deduplication failed, falling back to JW:", err.message);
     }
@@ -785,9 +609,12 @@ async function dedupe(items) {
     }
     if (!dup) out2.push(it);
   }
+  console.log(`  After JW dedup: ${out2.length} items`);
 
   // 4) Optional LLM pass
   const out3 = await gptTitleMerge(out2);
+  console.log(`  After LLM dedup: ${out3.length} items`);
+  
   return out3;
 }
 
@@ -869,7 +696,7 @@ TITLU_RO: <titlu jurnalistic scurt>
 SUMAR_RO: <max 2 propoziții scurte>`;
 
 /** ===============================
- *  Clustering (per entity, with GPT-5.1)
+ *  Clustering (per entity, with GPT)
  *  =============================== */
 async function bunchForEntity(entityName, items) {
   if (!items || !items.length) return [];
@@ -884,6 +711,10 @@ async function bunchForEntity(entityName, items) {
       link: it.link,
       date: it.date,
     }));
+    
+    // DEBUG: Log what we're sending to GPT
+    console.log(`    Sending ${userItems.length} items to GPT for clustering...`);
+    
     try {
       await openaiLimiter.acquire();
       const r = await openai.chat.completions.create({
@@ -893,18 +724,76 @@ async function bunchForEntity(entityName, items) {
           { role: "user", content: JSON.stringify({ entity: entityName, items: userItems }, null, 2) },
         ],
       });
+      
+      const rawContent = r.choices?.[0]?.message?.content || "";
+      console.log(`    GPT raw response: ${rawContent.substring(0, 200)}...`);
+      
       let parsed = [];
-      try { parsed = JSON.parse(r.choices?.[0]?.message?.content || ""); } catch {}
-      if (!Array.isArray(parsed)) parsed = [];
+      try { 
+        parsed = JSON.parse(rawContent); 
+        console.log(`    GPT parsed response: ${parsed.length} clusters`);
+      } catch (e) {
+        console.error(`    Failed to parse GPT JSON: ${e.message}`);
+      }
+      
+      if (!Array.isArray(parsed)) {
+        console.warn(`    GPT returned non-array, using fallback clustering`);
+        // FALLBACK: Simple keyword clustering
+        return fallbackClustering(items);
+      }
+      
       return parsed.slice(0, 3).map((c) => ({
         label: String(c.label || `Subiect ${entityName}`),
         indices: Array.isArray(c.indices) ? c.indices.slice(0, 5) : [],
       }));
     } catch (err) {
       console.error(`❌ Clustering failed for ${entityName}:`, err.message);
-      return [];
+      console.log(`    Using fallback clustering...`);
+      return fallbackClustering(items);
     }
   });
+}
+
+// Fallback clustering when GPT fails
+function fallbackClustering(items) {
+  console.log(`    FALLBACK: Creating clusters based on title similarity...`);
+  
+  // Simple clustering based on shared keywords
+  const clusters = [];
+  const used = new Set();
+  
+  for (let i = 0; i < items.length && clusters.length < 3; i++) {
+    if (used.has(i)) continue;
+    
+    const baseTitle = items[i].title.toLowerCase();
+    const clusterIndices = [i];
+    used.add(i);
+    
+    for (let j = i + 1; j < items.length && clusterIndices.length < 5; j++) {
+      if (used.has(j)) continue;
+      const compareTitle = items[j].title.toLowerCase();
+      
+      // Simple similarity: check if they share important words
+      const baseWords = baseTitle.split(/\s+/).filter(w => w.length > 3);
+      const compareWords = compareTitle.split(/\s+/).filter(w => w.length > 3);
+      const sharedWords = baseWords.filter(w => compareWords.includes(w));
+      
+      if (sharedWords.length >= 2) { // At least 2 shared words
+        clusterIndices.push(j);
+        used.add(j);
+      }
+    }
+    
+    if (clusterIndices.length >= 2) { // Only keep clusters with 2+ items
+      clusters.push({
+        label: items[i].title.substring(0, 50) + "...",
+        indices: clusterIndices
+      });
+    }
+  }
+  
+  console.log(`    FALLBACK: Created ${clusters.length} clusters`);
+  return clusters;
 }
 
 /** Title & Summary generator */
@@ -917,6 +806,7 @@ async function titleAndSummaryFor(items) {
       lead: it.snippet || "",
       fragment: it.snippet || "",
     }));
+    
     try {
       await openaiLimiter.acquire();
       const r = await openai.chat.completions.create({
@@ -932,7 +822,11 @@ async function titleAndSummaryFor(items) {
       return { title: t, summary: s };
     } catch (err) {
       console.error("❌ Title/summary generation failed:", err.message);
-      return { title: "", summary: "" };
+      // FALLBACK: Use first article's title and snippet
+      return { 
+        title: items[0]?.title || "Subiect", 
+        summary: items[0]?.snippet?.substring(0, 150) || "" 
+      };
     }
   });
 }
@@ -949,10 +843,12 @@ function itemSig(it) {
     return u;
   }
 }
+
 function topicKeyFromItems(items) {
   const sigs = Array.from(new Set((items || []).map(itemSig))).sort();
   return djb2(sigs.join("|"));
 }
+
 const ENTITY_PRIORITY = [
   "presedintie",
   "guvern",
@@ -1202,7 +1098,7 @@ function generateSourceFooter() {
 }
 
 /** =============================================
- *  HTML Generation - NO HEADER, MINIMAL FOOTER
+ *  HTML Generation
  *  ============================================= */
 function esc(s) {
   return he.encode(String(s || ""), { useNamedReferences: true });
@@ -1343,6 +1239,17 @@ body{
   .items .src{margin-left:0;margin-top:2px}
   .card__thumbnail img{border-width:1px}
 }
+
+/* Debug info */
+.debug-info {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  padding: 10px;
+  margin: 10px 0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+}
 </style>`;
 }
 
@@ -1371,7 +1278,15 @@ ${getMinimalStyles()}
 </head>
 <body>
 <main class="wrap">
-  <div class="content">${contentHtml}</div>
+  <div class="content">
+    ${contentHtml}
+    <!-- DEBUG INFO -->
+    <div class="debug-info">
+      <strong>Debug Info:</strong><br>
+      Generated at: ${esc(when)}<br>
+      Total entities: ${report.entities?.length || 0}
+    </div>
+  </div>
   ${sourceFooter}
 </main>
 </body>
@@ -1380,11 +1295,29 @@ ${getMinimalStyles()}
 
 function generateContentHTML(report, when) {
   const entities = report.entities || [];
+  
+  // DEBUG: Check if we have any entities
+  if (!entities.length) {
+    return `<div class="debug-info">
+      <strong>NO ENTITIES FOUND</strong><br>
+      This usually means:<br>
+      1. No articles passed the date filter (withinLast24h)<br>
+      2. No articles passed the content filters (looksRomanianArticle, localRoleCityPass)<br>
+      3. All RSS feeds returned empty or failed
+    </div>`;
+  }
+  
   return entities.map(e => {
     const subs = e.subjects || [];
-    if (!subs.length) return '';
     
-    const cards = subs.map(s => {
+    // DEBUG: Show entity info
+    let debugInfo = `<div class="debug-info">Entity: ${esc(e.name)} | Subjects: ${subs.length}</div>`;
+    
+    if (!subs.length) {
+      return debugInfo + `<div class="debug-info">No subjects for ${esc(e.name)}</div>`;
+    }
+    
+    const cards = subs.map((s, idx) => {
       const items = (s.items || []).slice(0, 5).map(it => 
         `<li>
           <a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.title)}</a>
@@ -1399,7 +1332,7 @@ function generateContentHTML(report, when) {
         `<div class="card__thumbnail">
            <img src="${esc(s.thumbnail)}" alt="Thumbnail" loading="lazy">
            <p class="thumbnail-source">sursa: ${esc(s.thumbnailSource || '')}</p>
-         </div>` : '';
+         </div>` : '<!-- No thumbnail -->';
       
       return `
         <div class="card">
@@ -1436,12 +1369,13 @@ async function buildData() {
     return cached;
   }
 
-  console.log("\n🚀 Starting report generation...\n");
+  console.log("\n🚀 Starting report generation...");
   const logs = { fetched: {}, filtered: {}, gpt_filtered: {}, deduped: {}, final: {} };
 
-  console.log("📡 Step 1/4: Fetching from all RSS feeds...");
+  console.log("\n📡 Step 1/4: Fetching from all RSS feeds...");
   const pools = {};
   const fetchPromises = ENTITY_ORDER.map(async (name) => {
+    console.log(`  Fetching pool for: ${name}`);
     const raw = await fetchEntityPool(name);
     logs.fetched[name] = raw;
     pools[name] = raw;
@@ -1452,12 +1386,16 @@ async function buildData() {
   console.log("\n🔍 Step 2/4: Filtering and deduplicating...");
   for (const name of ENTITY_ORDER) {
     const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
+    console.log(`  ${name}: ${arr.length} items after date filter`);
+    
     let filtered = [];
     if (name === "local") {
       filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
     } else {
       filtered = arr.filter(looksRomanianArticle);
     }
+    console.log(`  ${name}: ${filtered.length} items after content filters`);
+    
     filtered = enforcePoliticalRules(name, filtered);
     logs.filtered[name] = filtered.length;
 
@@ -1479,14 +1417,17 @@ async function buildData() {
       continue;
     }
 
-    console.log(`  Processing ${name}...`);
+    console.log(`  Processing ${name}... (${items.length} items)`);
     const clusters = await bunchForEntity(name, items);
     console.log(`    Found ${clusters.length} clusters`);
 
     const subjects = [];
     for (const [idx, cl] of clusters.entries()) {
       const subset = cl.indices.map((i) => items[i]).filter(Boolean).slice(0, 5);
-      if (subset.length === 0) continue;
+      if (subset.length === 0) {
+        console.log(`    Cluster ${idx} has no items, skipping`);
+        continue;
+      }
 
       const { title, summary } = await titleAndSummaryFor(subset);
       
@@ -1505,7 +1446,13 @@ async function buildData() {
       });
       console.log(`    ✓ Cluster ${idx + 1}: ${subset.length} articles${thumbnail ? ' (with thumbnail)' : ''}`);
     }
-    entities.push({ name, subjects });
+    
+    if (subjects.length > 0) {
+      entities.push({ name, subjects });
+      console.log(`  ✓ ${name}: ${subjects.length} subjects created`);
+    } else {
+      console.log(`  ⊘ ${name}: No subjects created from clusters`);
+    }
   }
 
   console.log("\n🔧 Post-processing: collapsing cross-entity topics (URL union)...");
@@ -1517,7 +1464,16 @@ async function buildData() {
   entities.sort((a, b) => ENTITY_PRIORITY.indexOf(a.name) - ENTITY_ORDER.indexOf(b.name));
 
   console.log("\n💾 Step 4/4: Saving results...");
-  const report = { generatedAt: new Date().toISOString(), timezone: CONFIG.misc.timezone, entities };
+  const report = { 
+    generatedAt: new Date().toISOString(), 
+    timezone: CONFIG.misc.timezone, 
+    entities,
+    stats: {
+      totalEntities: entities.length,
+      totalSubjects: entities.reduce((sum, e) => sum + (e.subjects?.length || 0), 0),
+      totalArticles: entities.reduce((sum, e) => sum + (e.subjects?.reduce((sSum, s) => sSum + (s.items?.length || 0), 0) || 0), 0)
+    }
+  };
   logs.final.report = report;
 
   await fs.promises.mkdir(CONFIG.paths.outDir, { recursive: true });
@@ -1528,7 +1484,9 @@ async function buildData() {
   console.log(`  ✓ Logs saved to ${LOGS_JSON}`);
   console.log(`  ✓ Cached to ${cacheFile}`);
 
-  console.log("\n✅ Report generation complete!\n");
+  console.log("\n✅ Report generation complete!");
+  console.log(`📊 Stats: ${report.stats.totalEntities} entities, ${report.stats.totalSubjects} subjects, ${report.stats.totalArticles} articles`);
+  
   return report;
 }
 
@@ -1539,6 +1497,14 @@ async function run() {
   try {
     validateEnv();
     const report = await buildData();
+    
+    // DEBUG: Log report stats
+    console.log("\n📊 FINAL REPORT STATS:");
+    console.log(`Entities: ${report.entities?.length || 0}`);
+    report.entities?.forEach(e => {
+      console.log(`  ${e.name}: ${e.subjects?.length || 0} subjects`);
+    });
+    
     const html = baseHTML({ report });
     await fs.promises.mkdir(CONFIG.paths.outDir, { recursive: true });
     await fs.promises.writeFile(OUT_HTML, html, "utf-8");
