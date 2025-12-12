@@ -661,8 +661,6 @@ async function buildReport() {
   console.log("\n✅ Report generated successfully!\n");
   return report;
 }
-}
-
 /** HTML generation */
 function generateHTML(report) {
   const date = new Date(report.generatedAt);
