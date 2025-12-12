@@ -7,7 +7,7 @@ import Parser from "rss-parser";
 /** Configuration */
 const CONFIG = {
   openaiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "",
-  model: "gpt-5.1",
+  model: "gpt-4.1",
   outDir: path.join(process.cwd(), "public"),
   cacheDir: path.join(process.cwd(), ".cache"),
   timezone: "Europe/Bucharest",
@@ -260,6 +260,7 @@ function calculateViralScores(articles) {
   
   return articles;
 }
+
 const ROMANIA_SIGNALS = [
   "românia", "romania", "românesc", "romanesc", "bucuresti", "bucurești",
   "cluj", "timișoara", "timisoara", "iași", "iasi", "constanța", "constanta",
@@ -306,7 +307,7 @@ function deduplicateByUrl(articles) {
   return Array.from(seen.values());
 }
 
-/** GPT-5.1: Cluster articles into topics */
+/** GPT: Cluster articles into topics */
 async function clusterArticles(entityName, articles) {
   if (!articles.length) return [];
   
@@ -348,7 +349,7 @@ ${JSON.stringify(payload, null, 2)}`;
   }
 }
 
-/** GPT-5.1: Generate title, summary, and context */
+/** GPT: Generate title, summary, and context */
 async function generateTitleSummary(articles) {
   if (!articles.length) return { title: "", summary: "", context: "", sentiment: "neutral" };
   
@@ -415,7 +416,7 @@ ${JSON.stringify(payload, null, 2)}`;
   }
 }
 
-/** GPT-5.1: Classify and deduplicate articles across entities */
+/** GPT: Classify and deduplicate articles across entities */
 async function classifyAndDeduplicate(entitiesData) {
   console.log("\n🔍 Classifying and deduplicating across entities...");
   
@@ -536,6 +537,7 @@ ${JSON.stringify(payload, null, 2)}`;
   
   return newEntitiesData;
 }
+
 /** Pick best thumbnail from articles */
 function pickBestThumbnail(items) {
   for (const item of items) {
@@ -546,6 +548,46 @@ function pickBestThumbnail(items) {
   }
   return null;
 }
+
+/** Collect "Alte știri de interes" - interesting news not in main categories */
+async function collectOtherNews(allArticles, usedArticleIds) {
+  console.log("\n📰 Collecting other interesting news...");
+  
+  // Filter out already used articles
+  const unused = allArticles.filter(a => !usedArticleIds.has(canonicalizeUrl(a.link)));
+  
+  // Filter for recent, high-credibility articles
+  const candidates = unused
+    .filter(a => withinLast24h(a.date))
+    .filter(a => (a.credibility || 0.5) >= 0.7)
+    .filter(a => a.isViral || (a.viralScore || 1) >= 2);
+  
+  if (candidates.length === 0) {
+    console.log("  → No additional interesting news found");
+    return [];
+  }
+  
+  // Sort by viral score and credibility
+  candidates.sort((a, b) => {
+    const scoreA = (a.viralScore || 1) * (a.credibility || 0.5);
+    const scoreB = (b.viralScore || 1) * (b.credibility || 0.5);
+    return scoreB - scoreA;
+  });
+  
+  // Take top 10
+  const top = candidates.slice(0, 10);
+  
+  console.log(`  → Found ${top.length} other interesting news items`);
+  
+  return top.map(a => ({
+    title: a.title,
+    link: a.link,
+    source: a.source,
+    thumbnail: a.thumbnail,
+    viralScore: a.viralScore || 1,
+  }));
+}
+
 async function buildReport() {
   console.log("\n🚀 Starting report generation...\n");
   
@@ -584,6 +626,9 @@ async function buildReport() {
   // GPT classification and deduplication across entities
   const classifiedData = await classifyAndDeduplicate(entitiesData);
   
+  // Track used article IDs for "Alte știri" section
+  const usedArticleIds = new Set();
+  
   // Process each entity with clustering
   const entities = [];
   
@@ -609,6 +654,9 @@ async function buildReport() {
       
       if (!items.length) continue;
       
+      // Track used articles
+      items.forEach(item => usedArticleIds.add(canonicalizeUrl(item.link)));
+      
       const { title, summary, context, sentiment, verification } = await generateTitleSummary(items);
       
       // Calculate source diversity and viral score
@@ -616,6 +664,9 @@ async function buildReport() {
       const avgCredibility = items.reduce((sum, it) => sum + (it.credibility || 0.5), 0) / items.length;
       const maxViralScore = Math.max(...items.map(it => it.viralScore || 1));
       const isViral = maxViralScore >= 3;
+      
+      // Pick best thumbnail from items
+      const thumbnail = pickBestThumbnail(items);
       
       subjects.push({
         label: cluster.label || title,
@@ -625,6 +676,7 @@ async function buildReport() {
         sentiment,
         verification,
         items,
+        thumbnail,
         // Metadata
         sourceDiversity: uniqueSources,
         avgCredibility: Math.round(avgCredibility * 100) / 100,
@@ -643,11 +695,15 @@ async function buildReport() {
     entities.push({ name: entityName, subjects });
   }
   
+  // Collect "Alte știri de interes"
+  const otherNews = await collectOtherNews(allArticles, usedArticleIds);
+  
   // Create report
   const report = {
     generatedAt: new Date().toISOString(),
     timezone: CONFIG.timezone,
     entities,
+    otherNews,
   };
   
   // Save
@@ -661,6 +717,7 @@ async function buildReport() {
   console.log("\n✅ Report generated successfully!\n");
   return report;
 }
+
 /** HTML generation */
 function generateHTML(report) {
   const date = new Date(report.generatedAt);
@@ -686,13 +743,14 @@ body{font-family:Inter,sans-serif;color:var(--ink);background:var(--bg);line-hei
 .entity{margin:40px 0 32px}
 .entity__t{display:inline-block;background:var(--accent);color:var(--accent-ink);padding:8px 16px;font:800 16px/1 Space Grotesk,sans-serif;text-transform:uppercase;margin:0 0 16px;border-radius:4px}
 .card{border-bottom:1px solid var(--line);padding:24px 0;margin:0 0 16px;display:grid;grid-template-columns:1fr 200px;gap:24px;align-items:start}
+.card--no-thumb{grid-template-columns:1fr}
 .card__body{min-width:0}
 .card__head{display:flex;align-items:flex-start;gap:12px;margin:0 0 12px}
 .card__t{font:800 24px/1.2 Space Grotesk,sans-serif;margin:0;flex:1}
 .card__meta{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
 .badge{font-size:11px;padding:3px 8px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
 .badge--popular{background:var(--popular);color:#fff}
-.badge--outlets{background:#dbeafe;color:#1e40af}
+.badge--sources{background:#dbeafe;color:#1e40af}
 .card__thumb{width:200px;height:120px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
 .sub__context{font-size:14px;color:var(--muted);margin:0 0 8px;font-style:italic}
 .sub__sum{font-size:16px;color:var(--ink);margin:0 0 12px;line-height:1.5}
@@ -704,13 +762,17 @@ body{font-family:Inter,sans-serif;color:var(--ink);background:var(--bg);line-hei
 .more-sources{font-size:13px;color:var(--muted);margin:8px 0 0;font-style:italic}
 .other-news{margin:40px 0;padding:24px;background:#f9fafb;border-radius:8px}
 .other-news__t{font:800 20px/1.2 Space Grotesk,sans-serif;margin:0 0 16px}
-.other-news__item{margin:12px 0;padding:12px 0;border-bottom:1px solid var(--line)}
+.other-news__item{margin:12px 0;padding:12px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 80px;gap:16px;align-items:center}
+.other-news__item--no-thumb{grid-template-columns:1fr}
 .other-news__item:last-child{border:none}
 .other-news__link{font-size:15px;font-weight:600;color:var(--ink);text-decoration:none;border-bottom:1px solid rgba(10,10,10,.1)}
 .other-news__link:hover{border-bottom-color:var(--accent)}
+.other-news__thumb{width:80px;height:50px;object-fit:cover;border-radius:4px}
 @media(max-width:768px){
   .card{grid-template-columns:1fr}
   .card__thumb{width:100%;height:200px;order:-1}
+  .other-news__item{grid-template-columns:1fr}
+  .other-news__thumb{width:100%;height:120px;order:-1}
 }
 </style>
 </head>
@@ -733,13 +795,15 @@ const entitiesHTML=data.entities.map(e=>{
     const moreSources=s.additionalItems>0?\`<div class="more-sources">+\${s.additionalItems} mai multe surse</div>\`:"";
     const ctx=s.context_ro?\`<p class="sub__context">\${s.context_ro}</p>\`:"";
     const sum=s.sumar_ro?\`<p class="sub__sum">\${s.sumar_ro}</p>\`:"";
-    const popularBadge=s.isPopular?\`<span class="badge badge--popular">POPULAR</span>\`:"";
-    const thumb=s.thumbnail?\`<img src="\${s.thumbnail}" alt="thumbnail" class="card__thumb" loading="lazy"/>\`:"";
+    const popularBadge=s.isViral?\`<span class="badge badge--popular">POPULAR</span>\`:"";
+    const thumb=s.thumbnail?\`<img src="\${s.thumbnail}" alt="" class="card__thumb" loading="lazy" onerror="this.style.display='none'"/>\`:"";
+    const cardClass=s.thumbnail?"card":"card card--no-thumb";
+    const sourcesLabel=s.sourceDiversity===1?"1 sursă":\`\${s.sourceDiversity} surse\`;
     const meta=\`<div class="card__meta">
       \${popularBadge}
-      <span class="badge badge--outlets">\${s.sourceDiversity||1} outlet-uri</span>
+      <span class="badge badge--sources">\${sourcesLabel}</span>
     </div>\`;
-    return\`<div class="card">
+    return\`<div class="\${cardClass}">
       <div class="card__body">
         <div class="card__head"><h3 class="card__t">\${s.titlu_ro||s.label}</h3></div>
         \${meta}\${ctx}\${sum}
@@ -756,12 +820,18 @@ const entitiesHTML=data.entities.map(e=>{
 const otherNewsHTML=data.otherNews&&data.otherNews.length?\`
   <div class="other-news">
     <h2 class="other-news__t">Alte Știri de Interes</h2>
-    \${data.otherNews.map(item=>\`
-      <div class="other-news__item">
-        <a href="\${item.link}" target="_blank" class="other-news__link">\${item.title}</a>
-        <div class="src" style="margin-top:4px">\${fmtDomain(item.link)}</div>
+    \${data.otherNews.map(item=>{
+      const thumb=item.thumbnail?\`<img src="\${item.thumbnail}" alt="" class="other-news__thumb" loading="lazy" onerror="this.style.display='none'"/>\`:"";
+      const itemClass=item.thumbnail?"other-news__item":"other-news__item other-news__item--no-thumb";
+      return \`
+      <div class="\${itemClass}">
+        <div>
+          <a href="\${item.link}" target="_blank" class="other-news__link">\${item.title}</a>
+          <div class="src" style="margin-top:4px">\${fmtDomain(item.link)}</div>
+        </div>
+        \${thumb}
       </div>
-    \`).join('')}
+    \`}).join('')}
   </div>
 \`:"";
 
@@ -792,6 +862,7 @@ async function main() {
   console.log(`   - Entities: ${report.entities.length}`);
   console.log(`   - Topics: ${report.entities.reduce((s,e)=>s+e.subjects.length,0)}`);
   console.log(`   - Articles: ${report.entities.reduce((s,e)=>s+e.subjects.reduce((ss,sub)=>ss+sub.items.length,0),0)}`);
+  console.log(`   - Other News: ${report.otherNews?.length || 0}`);
 }
 
 main().catch(err => {
