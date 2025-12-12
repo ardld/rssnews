@@ -218,7 +218,7 @@ const INSTITUTION_WORDS = [
   "guvern", "guvernul", "parlament", "parlamentul", "camera deputaților", "senat", "senatul",
   "ministru", "ministrul", "ministerul", "președinte", "președintele", "președinție", "administrația prezidențială",
   "prim-ministru", "premier", "premierul", "vicepremier", "secretar de stat", "prefect", "prefectură",
-  "psd", "pnl", "usr", "udmr", "aur", "sos românia", "partidul", "deputat", "deputatul", "senator", "senatorul",
+  "psd", "pnl", "usr", "udmr", "partidul aur", "sos românia", "partidul", "deputat", "deputatul", "senator", "senatorul", "senatul", "camera deputaților", "administrația prezidențială", 
 ];
 
 const SOCIETAL_CHANGE_WORDS = [
@@ -227,7 +227,21 @@ const SOCIETAL_CHANGE_WORDS = [
   "cutremur", "tragedie", "tragedii",
   "investiție", "investiții", "fonduri", "finanțare", "buget", "economie", "economic",
   "lege", "legi", "regulament", "directivă", "reformă", "reforme",
-  "revoluție", "revoluționar", "schimbare majoră", "dezvoltare majoră",
+  "revoluție", "revoluționar",  "energie", "energetică", "preț", "prețuri", "factură", "facturi",
+  "gaz", "gaze", "electricitate", "curent", "curenți", "termoficare",
+  "apă", "canalizare", "poluare", "poluant", "drepturi", "drepturile", "justiție", "sărăcie", "sărac", "șomaj",
+  "educație", "educațional", "profesor", "profesori", "școală", "școli",
+  "universitate", "universități", "sănătate", "sanitar", "medical", "medici",   "lege", "legi", "regulament", "directivă", "reformă", "reforme",
+  "amendament", "amendamente", "vot", "voturi", "alegere", "alegeri",
+  "candidat", "candidați", "campanie", "campanii", "referendum", "plebiscit",
+  "constituție", "constituțional", "curte supremă", "dna", "diicot",
+  "arest", "arestare", "arestări", "revoltă", "revolte", "greva", "greve", "manifestant", "manifestanți",
+  "scandal", "scandaluri", "conflict", "conflicte", "criză", "crize",
+  "corupție", "corupt", "fraudă", "fraude", "condamnare", "condamnări", "lege", "legi", "regulament", "directivă", "reformă", "reforme",
+  "amendament", "amendamente", "vot", "voturi", "alegere", "alegeri",
+  "candidat", "candidați", "campanie", "campanii", "referendum", "plebiscit",
+  "constituție", "constituțional", "curte supremă", "dna", "diicot",
+  "arest", "arestare", "arestări",
 ];
 
 function hasRomaniaSignal(text) {
