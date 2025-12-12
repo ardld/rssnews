@@ -21,10 +21,10 @@ const CONFIG = {
     embeddingBatchSize: 100,
     maxTokens: 3000,
     reasoning: {
-      effort: "medium", // ← ADDED: moderate thinking
+      effort: "none", // ← ADDED: moderate thinking
     },
     text: {
-      verbosity: "medium", // ← ADDED: output verbosity
+      verbosity: "low", // ← ADDED: output verbosity
     },
   },
   filters: {
