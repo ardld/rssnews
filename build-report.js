@@ -1,3 +1,6 @@
+Here's the complete modified file with all requested changes:
+
+```javascript
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
@@ -19,10 +22,10 @@ const CONFIG = {
     model: "gpt-5.1",
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
-    maxTokens: 3000,
+    maxTokens: 3000, // Truncates text to ~2,250 words for API calls
   },
   filters: {
-    embeddingSimilarity: 0.90,
+    embeddingSimilarity: 0.90, // Cosine similarity threshold (0.90 = 90% similar)
     jwSimilarity: 0.92,
     maxArticlesPerEntity: 120,
     timeWindowHours: 24,
@@ -34,7 +37,6 @@ const CONFIG = {
   misc: {
     timezone: "Europe/Bucharest",
   },
-  analytics: { ga4: process.env.GA_MEASUREMENT_ID || "G-Z3SMLP8TGS" },
   rss: {
     feeds: [
       "https://www.biziday.ro/feed/",
@@ -183,27 +185,6 @@ function djb2(str) {
  *  ============================================= */
 const RO_SIGNALS = ["românia", "româniei", "romania", "romaniei", "bucurești", "bucuresti"];
 
-const ROLE_WORDS = [
-  "primar",
-  "primarul",
-  "primăria",
-  "primaria",
-  "consiliu local",
-  "cl ",
-  "hotărâre",
-  "hotarare",
-  "proiect",
-  "buget",
-  "consiliu județean",
-  "consiliul județean",
-  "consiliu judetean",
-  "consiliul judetean",
-  "cj ",
-  "prefect",
-  "prefectură",
-  "prefectura",
-];
-
 const CITY_WORDS = [
   "sector 1", "sector 2", "sector 3", "sector 4", "sector 5", "sector 6",
   "bucurești", "bucuresti", "ilfov", "alba iulia", "arad", "pitești", "pitesti",
@@ -236,26 +217,63 @@ const CITY_WORDS = [
   "rădăuți", "radauti",
 ];
 
+const INSTITUTION_WORDS = [
+  "guvern", "guvernul", "parlament", "parlamentul", "camera deputaților", "senat", "senatul",
+  "ministru", "ministrul", "ministerul", "președinte", "președintele", "președinție", "administrația prezidențială",
+  "prim-ministru", "premier", "premierul", "vicepremier", "secretar de stat", "prefect", "prefectură",
+  "psd", "pnl", "usr", "udmr", "aur", "sos românia", "partidul", "deputat", "deputatul", "senator", "senatorul",
+];
+
+const SOCIETAL_CHANGE_WORDS = [
+  "protest", "proteste", "manifestație", "manifestații", "demonstrație", "demonstrații",
+  "dezastru", "dezastre", "catastrofă", "catastrofe", "incendiu", "incendii", "inundație", "inundații",
+  "cutremur", "tragedie", "tragedii",
+  "investiție", "investiții", "fonduri", "finanțare", "buget", "economie", "economic",
+  "lege", "legi", "regulament", "directivă", "reformă", "reforme",
+  "revoluție", "revoluționar", "schimbare majoră", "dezvoltare majoră",
+];
+
 function hasRomaniaSignal(text) {
   const t = (text || "").toLowerCase();
   return RO_SIGNALS.some((w) => t.includes(w)) || CITY_WORDS.some((w) => t.includes(w));
 }
+
 function isRomanianDomain(u) {
   return domainOf(u).endsWith(".ro");
 }
-function looksRomanianArticle(item) {
-  const text = `${item.title || ""} ${item.snippet || ""}`;
-  return isRomanianDomain(item.link || "") && hasRomaniaSignal(text);
-}
-function localRoleCityPass(item) {
-  const text = (`${item.title || ""} ${item.snippet || ""}`).toLowerCase().split(/\s+/).slice(0, 200).join(" ");
-  if (ROLE_WORDS.some((w) => text.includes(w))) return false;
-  const role = ROLE_WORDS.some((w) => text.includes(w));
-  const city = CITY_WORDS.some((w) => text.includes(w));
-  return role && city;
+
+// General filter: Is it about Romania AND (institutions/politicians OR major societal changes)?
+function isAboutRomanianPoliticsOrSociety(item) {
+  if (!isRomanianDomain(item.link || "")) return false;
+  
+  const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase();
+  const hasRomania = hasRomaniaSignal(text);
+  if (!hasRomania) return false;
+
+  const hasInstitution = INSTITUTION_WORDS.some((w) => text.includes(w));
+  const hasSocietalChange = SOCIETAL_CHANGE_WORDS.some((w) => text.includes(w));
+  
+  return hasInstitution || hasSocietalChange;
 }
 
-// --- Political enforcement (USR/PSD/PNL/UDMR only at "Putere")
+// Local filter: If about a Romanian city → prefer mayor/city hall, else keep only if significant
+function isSignificantLocalNews(item) {
+  const text = `${item.title || ""} ${item.snippet || ""}`.toLowerCase().split(/\s+/).slice(0, 200).join(" ");
+  
+  // Check if it's about a Romanian city
+  const isCityNews = CITY_WORDS.some((w) => text.includes(w));
+  
+  if (isCityNews) {
+    // Prefer news about mayor/city hall
+    const localGovWords = ["primar", "primarul", "primăria", "primaria", "primarie", "consiliu local", "cl"];
+    return localGovWords.some((w) => text.includes(w));
+  } else {
+    // Not city-specific → keep only if about major societal changes
+    return SOCIETAL_CHANGE_WORDS.some((w) => text.includes(w));
+  }
+}
+
+// Political power detection (for Opposition purity)
 const POWER_PARTIES = ["psd","pnl","udmr","usr"];
 const POWER_PEOPLE = [
   "grindeanu", "bolojan", "kelemen", "dominic fritz",
@@ -275,10 +293,19 @@ function mentionsPowerSignals(item) {
     GOVERNMENT_ROLE_TOKENS.some((k) => t.includes(k))
   );
 }
+
 function enforcePoliticalRules(targetName, arr) {
-  return arr.filter((it) => {
-    if (targetName === "Opoziție" && mentionsPowerSignals(it)) return false;
-    return true;
+  // Keep existing logic for Opposition purity
+  if (targetName === "Opoziție") {
+    return arr.filter((it) => !mentionsPowerSignals(it));
+  }
+  
+  // Apply general Romanian politics/society filter
+  return arr.filter((item) => {
+    if (targetName === "Local (Primării)") {
+      return isSignificantLocalNews(item);
+    }
+    return isAboutRomanianPoliticsOrSociety(item);
   });
 }
 
@@ -997,12 +1024,16 @@ async function buildData() {
   console.log("\n🔍 Step 2/4: Filtering and deduplicating...");
   for (const name of ENTITY_ORDER) {
     const arr = (pools[name] || []).filter((x) => x.title && x.link && withinLast24h(x.date));
+    
+    // Apply new policy filters
     let filtered = [];
     if (name === "Local (Primării)") {
-      filtered = arr.filter(looksRomanianArticle).filter(localRoleCityPass);
+      filtered = arr.filter(isSignificantLocalNews);
     } else {
-      filtered = arr.filter(looksRomanianArticle);
+      filtered = arr.filter(isAboutRomanianPoliticsOrSociety);
     }
+    
+    // Apply opposition purity rule
     filtered = enforcePoliticalRules(name, filtered);
     logs.filtered[name] = filtered.length;
 
@@ -1076,18 +1107,6 @@ function esc(s) {
   return he.encode(String(s || ""), { useNamedReferences: true });
 }
 
-function getAnalyticsTag(id) {
-  if (!id) return "";
-  const safe = String(id).replace(/[^A-Za-z0-9_\-]/g, "");
-  return `
-<script async src="https://www.googletagmanager.com/gtag/js?id=${safe}"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', '${safe}');
-</script>`;
-}
 function getStylesAndFonts() {
   return `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1256,7 +1275,6 @@ function baseHTML({ report }) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>CONTEXTPOLITIC.ro — ${esc(when)}</title>
-${getAnalyticsTag(CONFIG.analytics.ga4)}
 ${getStylesAndFonts()}
 </head>
 <body>
@@ -1298,3 +1316,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.exit(1);
   });
 }
+```
