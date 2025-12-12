@@ -1,6 +1,3 @@
-Here's the complete modified file with all requested changes:
-
-```javascript
 import fs from "fs";
 import path from "path";
 import OpenAI from "openai";
@@ -22,10 +19,10 @@ const CONFIG = {
     model: "gpt-5.1",
     embeddingModel: "text-embedding-3-small",
     embeddingBatchSize: 100,
-    maxTokens: 3000, // Truncates text to ~2,250 words for API calls
+    maxTokens: 3000,
   },
   filters: {
-    embeddingSimilarity: 0.90, // Cosine similarity threshold (0.90 = 90% similar)
+    embeddingSimilarity: 0.90,
     jwSimilarity: 0.92,
     maxArticlesPerEntity: 120,
     timeWindowHours: 24,
@@ -1316,4 +1313,3 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.exit(1);
   });
 }
-```
