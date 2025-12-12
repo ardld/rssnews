@@ -34,7 +34,7 @@ const CONFIG = {
     embeddingBatchSize: 100,
     maxTokens: 3000,
     reasoning: { effort: "medium" }, // ← MEDIUM reasoning for quality
-    text: { verbosity: "low" }, // ← CONCISE outputs
+    text: { verbosity: "medium" }, // ← CONCISE outputs
     maxCallTime: 12000, // ← 12s timeout per call
   },
   filters: {
@@ -379,7 +379,7 @@ Răspunde STRICT JSON: [{"indices":[0,5,7]}]. Fără alt text.`;
       model: CONFIG.llm.model,
       input: prompt + "\n\n" + JSON.stringify(payload),
       reasoning: { effort: CONFIG.llm.reasoning.effort },
-      text: { verbosity: "low" },
+      text: { verbosity: "medium" },
     });
     return JSON.parse(r.output || "[]");
   });
