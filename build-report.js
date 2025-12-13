@@ -56,11 +56,11 @@ const ENTITIES = [
 
 const QUERIES = {
   "Președinție": ["Nicușor Dan", "Administrația Prezidențială", "Iohannis", "Cotroceni", "Lasconi", "Geoana"],
-  "Guvern": ["Guvernul", "Premierul", "Ciolacu", "Ministrul", "Ministerul", "Bolojan", "Minesterul", "OUG"],
+  "Guvern": ["Guvernul", "Premierul", "Bolojan", "Ministrul", "Ministerul", "Bolojan", "Minesterul", "OUG"],
   "Parlament": ["Parlamentul", "Camera Deputaților", "Senatul", "Senator", "Deputat", "Plen", "Legislativ"],
-  "Coaliție (Putere)": ["PSD", "PNL", "UDMR", "USR", "Coalitia", "Ciuca"],
-  "Opoziție": ["AUR", "Simion", "SOS România", "Șoșoacă", "Sosoaca", "Partidul POT", "Georgescu"],
-  "Local (Primării)": ["primar", "primăria", "consiliul local", "București", "Cluj", "locală"],
+  "Coaliție (Putere)": ["PSD", "PNL", "UDMR", "USR", "Coaliția"],
+  "Opoziție": ["AUR", "Simion", "SOS România", "Șoșoacă", "Sosoaca", "Partidul POT", "Călin Georgescu"],
+  "Local (Primării)": ["primar", "primăria", "consiliul local", "administrație locală"],
 };
 
 /** STOP WORDS ROMANIAN */
