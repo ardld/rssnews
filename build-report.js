@@ -7,7 +7,7 @@ import Parser from "rss-parser";
 /** Configuration */
 const CONFIG = {
   openaiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "",
-  model: "gpt-4.1", // Ensure you use a valid model ID (e.g. gpt-4, gpt-4-turbo, gpt-4o)
+  model: "gpt-4-turbo", // Recomandat pentru precizie mai mare
   outDir: path.join(process.cwd(), "public"),
   cacheDir: path.join(process.cwd(), ".cache"),
   timezone: "Europe/Bucharest",
@@ -53,28 +53,20 @@ const ENTITIES = [
 ];
 
 const QUERIES = {
-  "Președinție": [
-    "Nicușor Dan", "Nicusor Dan", "Administrația Prezidențială", "Administratia Prezidentiala"
-  ],
-  "Guvern": [
-    "Guvernul României", "Guvernul Romaniei", "Premierul României", "Premierul Romaniei",
-    "prim-ministru", "ministerul", "ministrul", "ministra", "guvernul", "Bolojan",
-  ],
-  "Parlament": [
-    "Parlamentul României", "Parlamentul Romaniei", "Camera Deputaților", "Senatul",
-    "deputatul", "senatorul", "senatoarea", "deputații", "senatorii", "votul din plen",
-  ],
-  "Coaliție (Putere)": [
-    "PSD", "Partidul Social Democrat", "PNL", "Partidul Național Liberal",
-    "UDMR", "USR", "Uniunea Salvați România"
-  ],
-  "Opoziție": [
-    "AUR", "George Simion", "SOS România", "Diana Șoșoacă", "Partidul Oamenilor Tineri", "Anamaria Gavrilă"
-  ],
-  "Local (Primării)": [
-    "primar", "primăria", "primaria", "primarul"
-  ],
+  "Președinție": ["Nicușor Dan", "Administrația Prezidențială", "Iohannis", "Cotroceni", "Lasconi", "Geoana"],
+  "Guvern": ["Guvernul", "Premierul", "Ciolacu", "Ministrul", "Ministerul", "Bolojan", "Minesterul", "OUG"],
+  "Parlament": ["Parlamentul", "Camera Deputaților", "Senatul", "Senator", "Deputat", "Plen", "Legislativ"],
+  "Coaliție (Putere)": ["PSD", "PNL", "UDMR", "USR", "Coalitia", "Ciuca"],
+  "Opoziție": ["AUR", "Simion", "SOS România", "Șoșoacă", "Sosoaca", "Partidul POT", "Georgescu"],
+  "Local (Primării)": ["primar", "primăria", "consiliul local", "București", "Cluj", "locală"],
 };
+
+/** STOP WORDS ROMANIAN (pentru curățarea titlurilor înainte de comparare) */
+const STOP_WORDS = new Set([
+  "de", "la", "si", "și", "in", "în", "cu", "o", "un", "mai", "pentru", "pe", "nu", "sa", "să", "din",
+  "ale", "lui", "al", "ai", "fost", "este", "sunt", "au", "fi", "ca", "că", "ce", "cine", "cand", "când",
+  "cum", "unde", "care", "doar", "tot", "toti", "toți", "dupa", "după", "prin", "peste", "sub", "fara", "fără"
+]);
 
 /** Helper functions */
 const canonicalizeUrl = (url) => {
@@ -107,10 +99,18 @@ const withinLast24h = (dateStr) => {
   return Date.now() - d.getTime() <= 24 * 60 * 60 * 1000;
 };
 
-/** String Similarity for Deduplication */
-function getJaccardSimilarity(str1, str2) {
-  const set1 = new Set(str1.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-  const set2 = new Set(str2.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+/** Jaccard Similarity Logic for Grouping */
+function getTokens(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\săîâșț]/g, "") // remove punctuation
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+function calculateSimilarity(str1, str2) {
+  const set1 = new Set(getTokens(str1));
+  const set2 = new Set(getTokens(str2));
   
   if (set1.size === 0 || set2.size === 0) return 0;
   
@@ -118,6 +118,45 @@ function getJaccardSimilarity(str1, str2) {
   const union = new Set([...set1, ...set2]);
   
   return intersection.size / union.size;
+}
+
+/** Group articles by Topic Similarity */
+function clusterBySimilarity(articles) {
+  const clusters = []; // Array of arrays of articles
+
+  // Sort by length desc (longer titles usually have more info to match against)
+  const sortedArticles = [...articles].sort((a, b) => b.title.length - a.title.length);
+
+  for (const article of sortedArticles) {
+    let bestClusterIndex = -1;
+    let bestSimilarity = 0;
+
+    // Try to find a matching cluster
+    for (let i = 0; i < clusters.length; i++) {
+      // Check similarity against the first (representative) article of the cluster
+      // Or check against all and take average/max. Max is safer for chain-linking.
+      const cluster = clusters[i];
+      
+      // We check against the first article in the cluster (the seed)
+      const sim = calculateSimilarity(article.title, cluster[0].title);
+      
+      if (sim > bestSimilarity) {
+        bestSimilarity = sim;
+        bestClusterIndex = i;
+      }
+    }
+
+    // Threshold: 0.25 (approx 1 in 4 meaningful words match)
+    // E.g. "Ciucu primar bucuresti" vs "Ciprian Ciucu castiga primaria" -> Overlap: Ciucu, primar/primaria -> High match
+    if (bestSimilarity >= 0.20 && bestClusterIndex !== -1) {
+      clusters[bestClusterIndex].push(article);
+    } else {
+      // Create new cluster
+      clusters.push([article]);
+    }
+  }
+
+  return clusters;
 }
 
 /** Fetch RSS feeds */
@@ -144,75 +183,28 @@ async function fetchRSS() {
     }
   }
   
-  const enriched = await Promise.all(articles.map(enrichArticle));
-  const withViral = calculateViralScores(enriched);
-  
-  return withViral.filter(a => {
-    if (a.hasDisinfo && a.credibility < 0.9) {
-      return false;
-    }
-    return true;
+  // Enrich and Filter Disinfo
+  const enriched = articles.map(a => {
+    const cred = CONFIG.sourceCredibility[domainOf(a.link)] || 0.5;
+    return { ...a, credibility: cred };
   });
-}
 
-function getCredibilityScore(article) {
-  const domain = domainOf(article.link);
-  return CONFIG.sourceCredibility[domain] || 0.5;
-}
-
-const DISINFO_SIGNALS = [
-  "fake news", "mainstream media", "globaliști", "globalisti",
-  "deep state", "elita", "tradatori", "trădători",
-  "soroș", "soros", "bill gates", "klaus schwab",
-  "masonii", "mason", "iluminati", "illuminati",
-  "dacii", "daci liberi", "imperiu colonial",
-  "schengen e o conspirație", "ne vând țara",
-];
-
-function hasDisinfoSignals(text) {
-  const lower = text.toLowerCase();
-  return DISINFO_SIGNALS.some(sig => lower.includes(sig));
-}
-
-async function enrichArticle(article) {
-  const credibility = getCredibilityScore(article);
-  const hasDisinfo = hasDisinfoSignals(`${article.title} ${article.snippet}`);
-  return { ...article, credibility, hasDisinfo };
-}
-
-function calculateViralScores(articles) {
-  const storyGroups = new Map();
-  
-  articles.forEach(article => {
-    const words = article.title.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-    const key = words.slice(0, 3).sort().join('_');
-    if (!storyGroups.has(key)) storyGroups.set(key, []);
-    storyGroups.get(key).push(article);
-  });
-  
-  articles.forEach(article => {
-    const words = article.title.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-    const key = words.slice(0, 3).sort().join('_');
-    const group = storyGroups.get(key) || [];
-    const uniqueSources = new Set(group.map(a => domainOf(a.link))).size;
-    
-    article.viralScore = uniqueSources;
-    article.isViral = uniqueSources >= 3;
-  });
-  return articles;
+  return enriched;
 }
 
 const ROMANIA_SIGNALS = [
   "românia", "romania", "românesc", "romanesc", "bucuresti", "bucurești",
   "cluj", "timișoara", "timisoara", "iași", "iasi", "constanța", "constanta",
-  "brașov", "brasov", "sibiu", "craiova", "galați", "galati", "ploiești", "ploiesti"
+  "brașov", "brasov", "sibiu", "craiova", "galați", "galati", "ploiești", "ploiesti",
+  "ciolacu", "ciucă", "iohannis", "simion", "sosoaca", "lasconi", "geoana", "bolojan"
 ];
 
 const IRRELEVANT_SIGNALS = [
-  "budapesta", "budapest", "ungaria", "maghiar", "orban",
+  "budapesta", "ungaria", "maghiar", "orban viktor",
   "venezuela", "machado", "oslo", "veneția", "rialto",
   "tezaur", "colosseum mall", "inaugurare", "oferte speciale",
-  "edituri", "manuale", "academiei române", "ioan-aurel pop"
+  "edituri", "manuale", "academiei române", "ioan-aurel pop",
+  "horoscop", "meteo", "sport", "fotbal", "simona halep"
 ];
 
 function isAboutRomania(article) {
@@ -240,67 +232,30 @@ function deduplicateByUrl(articles) {
   return Array.from(seen.values());
 }
 
-async function clusterArticles(entityName, articles) {
-  if (!articles.length) return [];
-  
-  const payload = articles.slice(0, 50).map((a, i) => ({
-    i,
-    title: a.title,
-    source: a.source,
-  }));
-  
-  const prompt = `Grupează aceste articole românești în maximum 3 subiecte principale (topic-uri).
-Pentru fiecare subiect, selectează până la 5 articole relevante.
-Returnează JSON strict în acest format:
-[
-  {"label": "Titlu subiect 1", "indices": [0, 3, 5]},
-  {"label": "Titlu subiect 2", "indices": [1, 4, 7]}
-]
-Articole:
-${JSON.stringify(payload, null, 2)}`;
-
-  try {
-    const response = await openai.chat.completions.create({
-      model: CONFIG.model,
-      messages: [
-        { role: "system", content: "Răspunde DOAR cu JSON valid." },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.3,
-    });
-    const content = response.choices[0].message.content.trim();
-    const clusters = JSON.parse(content);
-    return Array.isArray(clusters) ? clusters.slice(0, 3) : [];
-  } catch (err) {
-    console.error(`  ⚠️  Clustering failed for ${entityName}:`, err.message);
-    return [];
-  }
-}
-
+/** GPT: Generate title, summary, and context based on a CLEAN cluster */
 async function generateTitleSummary(articles) {
   if (!articles.length) return { title: "", summary: "", context: "", sentiment: "neutral" };
+  
+  // Sort by credibility so GPT sees trustworthy sources first
   const sorted = articles.sort((a, b) => (b.credibility || 0.5) - (a.credibility || 0.5));
   
   const payload = sorted.map(a => ({
     title: a.title,
-    snippet: a.snippet.slice(0, 200),
+    snippet: a.snippet.slice(0, 150),
     source: a.source,
-    credibility: a.credibility,
   }));
   
-  const prompt = `Analizează aceste articole românești și creează:
-1. TITLU: Un titlu scurt și jurnalistic (maxim 12 cuvinte)
-2. SUMAR: Un sumar obiectiv de maxim 2 propoziții
-3. CONTEXT: O propoziție de context dacă e necesar (de ex: "Vine după..." sau "În contextul...")
-4. SENTIMENT: Tonul general (pozitiv/negativ/neutru/controversat)
-5. VERIFICARE: Notează dacă există afirmații neconfirmate sau contradictorii între surse
+  const prompt = `Analizează acest grup de articole (care sunt despre ACELAȘI subiect) și creează:
+1. TITLU: Un titlu scurt, informativ, jurnalistic (max 10 cuvinte).
+2. SUMAR: Un sumar obiectiv de max 25 cuvinte.
+3. CONTEXT: O propoziție scurtă de context ("Vine după...", "În contextul..."). Dacă nu e clar, scrie "N/A".
+4. SENTIMENT: <pozitiv|negativ|neutru|controversat>
 
-Format răspuns:
-TITLU: <titlu>
-SUMAR: <sumar>
-CONTEXT: <context sau "N/A">
-SENTIMENT: <pozitiv|negativ|neutru|controversat>
-VERIFICARE: <"Confirmat de multiple surse" sau "Necesită verificare: [motiv]">
+Format răspuns strict:
+TITLU: ...
+SUMAR: ...
+CONTEXT: ...
+SENTIMENT: ...
 
 Articole:
 ${JSON.stringify(payload, null, 2)}`;
@@ -309,99 +264,31 @@ ${JSON.stringify(payload, null, 2)}`;
     const response = await openai.chat.completions.create({
       model: CONFIG.model,
       messages: [
-        { role: "system", content: "Răspunde în limba română, obiectiv și precis." },
+        { role: "system", content: "Ești un editor de știri experimentat. Răspunde în română." },
         { role: "user", content: prompt },
       ],
       temperature: 0.3,
     });
     
     const content = response.choices[0].message.content;
-    const title = content.match(/TITLU:\s*(.+)/)?.[1]?.trim() || "";
+    const title = content.match(/TITLU:\s*(.+)/)?.[1]?.trim() || sorted[0].title;
     const summary = content.match(/SUMAR:\s*(.+)/)?.[1]?.trim() || "";
     const context = content.match(/CONTEXT:\s*(.+)/)?.[1]?.trim() || "";
     const sentiment = content.match(/SENTIMENT:\s*(\w+)/)?.[1]?.trim() || "neutral";
-    const verification = content.match(/VERIFICARE:\s*(.+)/)?.[1]?.trim() || "";
     
-    return { title, summary, context: context === "N/A" ? "" : context, sentiment, verification };
+    return { 
+      title, 
+      summary, 
+      context: context === "N/A" ? "" : context,
+      sentiment
+    };
   } catch (err) {
-    return { title: "", summary: "", context: "", sentiment: "neutral", verification: "" };
+    console.error("  ⚠️  GPT Summary failed:", err.message);
+    return { title: sorted[0].title, summary: "", context: "", sentiment: "neutral" };
   }
 }
 
-async function classifyAndDeduplicate(entitiesData) {
-  console.log("\n🔍 Classifying and deduplicating across entities...");
-  const allArticles = [];
-  entitiesData.forEach(entity => {
-    entity.articles.forEach(article => {
-      allArticles.push({
-        ...article,
-        currentEntity: entity.name,
-        id: canonicalizeUrl(article.link),
-      });
-    });
-  });
-  
-  const uniqueArticles = new Map();
-  allArticles.forEach(article => {
-    if (!uniqueArticles.has(article.id)) uniqueArticles.set(article.id, article);
-  });
-  const articles = Array.from(uniqueArticles.values());
-  if (articles.length === 0) return entitiesData;
-  
-  const batches = [];
-  const BATCH_SIZE = 40;
-  for (let i = 0; i < articles.length; i += BATCH_SIZE) {
-    batches.push(articles.slice(i, i + BATCH_SIZE));
-  }
-  
-  const classifications = new Map();
-  for (const batch of batches) {
-    const payload = batch.map((a, i) => ({
-      i, title: a.title, snippet: a.snippet.slice(0, 200), currentEntity: a.currentEntity,
-    }));
-    
-    const prompt = `Clasifică aceste articole în:
-1. "Opoziție" (AUR, SOS, George Simion, Diana Șoșoacă)
-2. "Guvern" (ministere, justiție, spitale, instituții centrale)
-3. "Parlament" (legi, voturi plen, senat, camera)
-4. "Coaliție (Putere)" (PSD, PNL, USR, UDMR)
-5. "Președinție" (Cotroceni, Nicușor Dan)
-6. "Local (Primării)" (primari, consilii locale)
-7. "EXCLUDE" (externe, meteo, sport, monden)
-
-Răspunde JSON: [{"i": 0, "entity": "Guvern"}]
-Articole:
-${JSON.stringify(payload, null, 2)}`;
-
-    try {
-      const response = await openai.chat.completions.create({
-        model: CONFIG.model,
-        messages: [{ role: "system", content: "JSON only." }, { role: "user", content: prompt }],
-        temperature: 0.2,
-      });
-      const results = JSON.parse(response.choices[0].message.content.trim());
-      if (Array.isArray(results)) {
-        results.forEach(result => {
-          const article = batch[result.i];
-          if (article && result.entity !== "EXCLUDE") classifications.set(article.id, result.entity);
-        });
-      }
-    } catch (err) {
-      batch.forEach(article => classifications.set(article.id, article.currentEntity));
-    }
-  }
-  
-  const newEntitiesData = ENTITIES.map(name => ({ name, articles: [] }));
-  articles.forEach(article => {
-    const assignedEntity = classifications.get(article.id);
-    if (assignedEntity) {
-      const entity = newEntitiesData.find(e => e.name === assignedEntity);
-      if (entity) entity.articles.push(article);
-    }
-  });
-  return newEntitiesData;
-}
-
+/** Pick best thumbnail */
 function pickBestThumbnail(items) {
   for (const item of items) {
     if (item.thumbnail && item.thumbnail.length > 10 && 
@@ -412,134 +299,153 @@ function pickBestThumbnail(items) {
   return null;
 }
 
-/** Collect "Alte știri de interes" with DEDUPLICATION */
-async function collectOtherNews(allArticles, usedArticleIds) {
-  console.log("\n📰 Collecting other interesting news...");
-  
-  // 1. Initial filter: unused, recent, decent credibility
-  const unused = allArticles.filter(a => !usedArticleIds.has(canonicalizeUrl(a.link)));
-  const candidates = unused
-    .filter(a => withinLast24h(a.date))
-    .filter(a => (a.credibility || 0.5) >= 0.7)
-    .filter(a => a.isViral || (a.viralScore || 1) >= 2);
-  
-  if (candidates.length === 0) return [];
-  
-  // 2. Sort by impact
-  candidates.sort((a, b) => {
-    const scoreA = (a.viralScore || 1) * (a.credibility || 0.5);
-    const scoreB = (b.viralScore || 1) * (b.credibility || 0.5);
-    return scoreB - scoreA;
-  });
-  
-  // 3. Selection with Similarity Check to avoid duplicate topics
-  const selectedArticles = [];
-  const selectedTitles = [];
-
-  for (const candidate of candidates) {
-    if (selectedArticles.length >= 10) break;
-
-    // Check similarity against already selected "other news"
-    const isDuplicate = selectedTitles.some(t => getJaccardSimilarity(t, candidate.title) > 0.4); // 0.4 threshold implies significant overlap
-
-    if (!isDuplicate) {
-      selectedArticles.push(candidate);
-      selectedTitles.push(candidate.title);
-    }
-  }
-  
-  console.log(`  → Found ${selectedArticles.length} other interesting news items (deduplicated)`);
-  
-  return selectedArticles.map(a => ({
-    title: a.title,
-    link: a.link,
-    source: a.source,
-    thumbnail: a.thumbnail,
-    viralScore: a.viralScore || 1,
-  }));
-}
-
+/** Main Report Builder */
 async function buildReport() {
-  console.log("\n🚀 Starting report generation...\n");
+  console.log("\n🚀 Starting report generation (Logic V2)...\n");
+  
+  // Setup cache
   const today = new Date().toLocaleDateString("ro-RO").replaceAll(".", "-");
-  const cacheFile = path.join(CONFIG.cacheDir, `report-${today}.json`);
+  const cacheFile = path.join(CONFIG.cacheDir, `report-v2-${today}.json`);
   
   await fs.promises.mkdir(CONFIG.cacheDir, { recursive: true });
-  if (fs.existsSync(cacheFile)) {
-    console.log("✓ Using cached report");
-    return JSON.parse(await fs.promises.readFile(cacheFile, "utf-8"));
-  }
+  // Uncomment to use cache during dev:
+  // if (fs.existsSync(cacheFile)) return JSON.parse(await fs.promises.readFile(cacheFile, "utf-8"));
   
-  const allArticles = await fetchRSS();
-  const entitiesData = [];
+  // 1. Fetch & Dedupe Global
+  let allArticles = await fetchRSS();
+  allArticles = allArticles.filter(a => withinLast24h(a.date));
+  allArticles = deduplicateByUrl(allArticles);
   
+  console.log(`✓ Fetched ${allArticles.length} recent articles.`);
+
+  const usedUrls = new Set(); // To prevent same article in multiple entities/sections
+  const entitiesOutput = [];
+
+  // 2. Process Entities
   for (const entityName of ENTITIES) {
-    let articles = filterByKeywords(allArticles, entityName);
-    articles = articles.filter(a => withinLast24h(a.date));
-    articles = deduplicateByUrl(articles);
-    entitiesData.push({ name: entityName, articles });
-  }
-  
-  const classifiedData = await classifyAndDeduplicate(entitiesData);
-  const usedArticleIds = new Set();
-  const entities = [];
-  
-  for (const entityData of classifiedData) {
-    if (!entityData.articles.length) continue;
-    const clusters = await clusterArticles(entityData.name, entityData.articles);
-    const subjects = [];
+    console.log(`\n📂 Processing: ${entityName}`);
     
-    for (const cluster of clusters) {
-      const items = cluster.indices.map(i => entityData.articles[i]).filter(Boolean).slice(0, 5);
-      if (!items.length) continue;
-      items.forEach(item => usedArticleIds.add(canonicalizeUrl(item.link)));
+    // a. Filter strictly by keywords
+    let entityArticles = filterByKeywords(allArticles, entityName);
+    
+    // b. Remove articles already used in previous entities (optional, but keeps things clean)
+    // entityArticles = entityArticles.filter(a => !usedUrls.has(a.link));
+
+    if (entityArticles.length === 0) continue;
+
+    // c. CLUSTER BY SIMILARITY (The Fix)
+    const rawClusters = clusterBySimilarity(entityArticles);
+    console.log(`   → Found ${rawClusters.length} raw clusters (topics).`);
+
+    const subjects = [];
+
+    // d. Process each cluster
+    for (const cluster of rawClusters) {
+      // Filter trivial clusters (single articles from low credibility sources) unless viral
+      const maxCred = Math.max(...cluster.map(c => c.credibility));
       
-      const { title, summary, context, sentiment, verification } = await generateTitleSummary(items);
+      // Keep cluster if: >1 article OR (1 article but high credibility > 0.8)
+      if (cluster.length < 2 && maxCred < 0.8) continue; 
+
+      // Take top 5 items per cluster
+      const items = cluster.slice(0, 5);
+      
+      // Mark as used
+      items.forEach(i => usedUrls.add(i.link));
+
+      // Calculate stats
       const uniqueSources = new Set(items.map(it => domainOf(it.link))).size;
-      const maxViralScore = Math.max(...items.map(it => it.viralScore || 1));
+      const viralScore = cluster.length; // Raw count in cluster matches popularity
+      const isViral = uniqueSources >= 3;
+
+      // Generate Summary
+      const meta = await generateTitleSummary(items);
       
       subjects.push({
-        label: cluster.label || title,
-        titlu_ro: title,
-        sumar_ro: summary,
-        context_ro: context,
-        sentiment,
-        verification,
-        items,
+        label: meta.title,
+        titlu_ro: meta.title,
+        sumar_ro: meta.summary,
+        context_ro: meta.context,
+        sentiment: meta.sentiment,
+        items: items,
         thumbnail: pickBestThumbnail(items),
         sourceDiversity: uniqueSources,
-        viralScore: maxViralScore,
-        isViral: maxViralScore >= 3,
+        viralScore: viralScore,
+        isViral: isViral
       });
     }
-    
-    subjects.sort((a, b) => {
-      if (a.isViral !== b.isViral) return b.isViral - a.isViral;
-      return b.sourceDiversity - a.sourceDiversity;
-    });
-    
-    entities.push({ name: entityData.name, subjects });
+
+    // e. Sort subjects by Viral Score then Diversity
+    subjects.sort((a, b) => b.viralScore - a.viralScore);
+
+    // Keep top 6 topics per entity
+    const finalSubjects = subjects.slice(0, 6);
+
+    if (finalSubjects.length > 0) {
+      entitiesOutput.push({ name: entityName, subjects: finalSubjects });
+    }
   }
+
+  // 3. Collect "Alte Știri" (Other News)
+  // Logic: Must NOT be in usedUrls. Must be high viral/credibility.
+  console.log("\n📰 Collecting Other News...");
   
-  const otherNews = await collectOtherNews(allArticles, usedArticleIds);
+  let leftovers = allArticles.filter(a => !usedUrls.has(a.link));
   
+  // Cluster leftovers to find significant missing stories
+  const leftoverClusters = clusterBySimilarity(leftovers);
+  const otherNewsCandidates = [];
+
+  for (const cluster of leftoverClusters) {
+    // Only care about clusters with at least 2 sources OR 1 very high cred source
+    const maxCred = Math.max(...cluster.map(c => c.credibility));
+    if (cluster.length < 2 && maxCred < 0.9) continue;
+
+    const items = cluster;
+    const uniqueSources = new Set(items.map(it => domainOf(it.link))).size;
+    
+    // We just pick the "best" article from the cluster to display
+    // Sort by credibility + length
+    items.sort((a, b) => (b.credibility * 100 + b.title.length) - (a.credibility * 100 + a.title.length));
+    const rep = items[0];
+
+    otherNewsCandidates.push({
+      title: rep.title,
+      link: rep.link,
+      source: rep.source,
+      thumbnail: pickBestThumbnail(items) || rep.thumbnail,
+      viralScore: uniqueSources // approximated by sources in cluster
+    });
+  }
+
+  // Sort by score
+  otherNewsCandidates.sort((a, b) => b.viralScore - a.viralScore);
+  const otherNews = otherNewsCandidates.slice(0, 12);
+
   const report = {
     generatedAt: new Date().toISOString(),
     timezone: CONFIG.timezone,
-    entities,
-    otherNews,
+    entities: entitiesOutput,
+    otherNews: otherNews
   };
-  
+
+  // Write to disk
   await fs.promises.mkdir(CONFIG.outDir, { recursive: true });
   await fs.promises.writeFile(path.join(CONFIG.outDir, "data.json"), JSON.stringify(report, null, 2));
   await fs.promises.writeFile(cacheFile, JSON.stringify(report, null, 2));
+  
+  console.log("\n✅ Report generated successfully!");
   return report;
 }
 
-/** Enhanced HTML generation */
+/** HTML Generator (Updated Layout) */
 function generateHTML(report) {
   const date = new Date(report.generatedAt);
-  const when = date.toLocaleString("ro-RO", { timeZone: CONFIG.timezone, dateStyle: "long", timeStyle: "short" });
+  const when = date.toLocaleString("ro-RO", {
+    timeZone: CONFIG.timezone,
+    dateStyle: "long",
+    timeStyle: "short",
+  });
   
   return `<!doctype html>
 <html lang="ro">
@@ -781,15 +687,19 @@ async function main() {
     process.exit(1);
   }
   
-  const report = await buildReport();
-  const html = generateHTML(report);
-  
-  await fs.promises.writeFile(path.join(CONFIG.outDir, "index.html"), html, "utf-8");
-  
-  console.log(`✅ HTML saved to ${path.join(CONFIG.outDir, "index.html")}`);
-  console.log(`📊 Statistics:`);
-  console.log(`   - Entities: ${report.entities.length}`);
-  console.log(`   - Other News: ${report.otherNews?.length || 0}`);
+  try {
+    const report = await buildReport();
+    const html = generateHTML(report);
+    
+    await fs.promises.writeFile(path.join(CONFIG.outDir, "index.html"), html, "utf-8");
+    
+    console.log(`✅ HTML saved to ${path.join(CONFIG.outDir, "index.html")}`);
+    console.log(`📊 Statistics:`);
+    console.log(`   - Entities: ${report.entities.length}`);
+    console.log(`   - Other News: ${report.otherNews?.length || 0}`);
+  } catch(e) {
+    console.error("FATAL ERROR:", e);
+  }
 }
 
 main().catch(err => {
