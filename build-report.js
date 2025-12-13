@@ -7,7 +7,7 @@ import Parser from "rss-parser";
 /** Configuration */
 const CONFIG = {
   openaiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "",
-  model: "gpt-4-turbo",
+  model: "gpt-5.2",  // CHANGED: Updated to GPT 5.2
   outDir: path.join(process.cwd(), "public"),
   cacheDir: path.join(process.cwd(), ".cache"),
   timezone: "Europe/Bucharest",
@@ -54,10 +54,45 @@ const ENTITIES = [
   "Local (Primării)",
 ];
 
+// CHANGED: Expanded keyword lists
 const QUERIES = {
   "Președinție": ["Nicușor Dan", "Administrația Prezidențială", "Iohannis", "Cotroceni", "Lasconi", "Geoana"],
-  "Guvern": ["Guvernul", "Premierul", "Bolojan", "Ministrul", "Ministerul", "Bolojan", "Minesterul", "OUG"],
-  "Parlament": ["Parlamentul", "Camera Deputaților", "Senatul", "Senator", "Deputat", "Plen", "Legislativ"],
+  
+  // CHANGED: Added "executivul", "palatul victoria", and all current ministers from Guvernul Bolojan
+  "Guvern": [
+    "Guvernul", "Premierul", "Bolojan", "Ministrul", "Ministerul", "OUG",
+    "executivul", "Palatul Victoria",
+    // Vicepremieri
+    "Marian Neacșu", "Neacșu",
+    "Cătălin Predoiu", "Predoiu",
+    "Ionuț Moșteanu", "Moșteanu",
+    "Tanczos Barna", "Barna",
+    "Dragoș Anastasiu", "Anastasiu",
+    // Miniștri
+    "Alexandru Nazare", "Nazare",
+    "Radu Marinescu", "Marinescu",
+    "Ciprian Șerban",
+    "Alexandru Rogobete", "Rogobete",
+    "Oana Țoiu", "Țoiu",
+    "Daniel David",
+    "Cseke Attila", "Cseke",
+    "Florin Barbu",
+    "Bogdan Ivan",
+    "Diana Buzoianu", "Buzoianu",
+    "Florin Petre Manole", "Manole",
+    "Dragoș Pîslaru", "Pîslaru",
+    "Mihai Jurca", "Jurca"
+  ],
+  
+  // CHANGED: Added expanded parliament keywords
+  "Parlament": [
+    "Parlamentul", "Camera Deputaților", "Senatul", "Senator", "Deputat", "Plen", "Legislativ",
+    "parlamentarul", "parlamentarii",
+    "deputatul", "deputatii", "deputații", "deputata",
+    "senatorul", "senatoarea", "senatorii",
+    "votul in plen", "votul în plen"
+  ],
+  
   "Coaliție (Putere)": ["PSD", "PNL", "UDMR", "USR", "Coaliția"],
   "Opoziție": ["AUR", "Simion", "SOS România", "Șoșoacă", "Sosoaca", "Partidul POT", "Călin Georgescu"],
   "Local (Primării)": ["primar", "primăria", "consiliul local", "administrație locală"],
@@ -183,24 +218,75 @@ async function fetchRSS() {
   return enriched;
 }
 
-const ROMANIA_SIGNALS = [
-  "românia", "romania", "românesc", "romanesc"
-];
+// CHANGED: Replaced hardcoded Romania filter with GPT call
+/** GPT-based Romania Relevance Check */
+async function checkRomaniaRelevance(articles) {
+  console.log(`🇷🇴 Checking Romania relevance for ${articles.length} articles via GPT...`);
+  
+  const BATCH_SIZE = 20;
+  const relevantArticles = [];
+  
+  for (let i = 0; i < articles.length; i += BATCH_SIZE) {
+    const batch = articles.slice(i, i + BATCH_SIZE);
+    
+    const payload = batch.map((a, idx) => ({
+      id: idx,
+      title: a.title,
+      snippet: a.snippet.slice(0, 100),
+    }));
+    
+    const prompt = `For each article below, answer YES or NO: Is this article about Romania or something significant involving Romania?
 
-const IRRELEVANT_SIGNALS = [
-  "horoscop", "meteo", "sport", "fotbal"
-];
+Return ONLY a JSON array of objects with "id" and "relevant" (boolean).
 
-function isAboutRomania(article) {
-  const text = `${article.title} ${article.snippet}`.toLowerCase();
-  if (IRRELEVANT_SIGNALS.some(sig => text.includes(sig))) return false;
-  return ROMANIA_SIGNALS.some(sig => text.includes(sig));
+Articles:
+${JSON.stringify(payload, null, 2)}`;
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: CONFIG.model,
+        messages: [
+          { 
+            role: "system", 
+            content: "You are a news classifier. Be concise. Output only valid JSON." 
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.1,
+        // CHANGED: Low reasoning, low verbosity settings for GPT 5.2
+        // These are applied via system prompt and temperature
+      });
+      
+      const content = response.choices[0].message.content;
+      // Parse JSON from response (handle potential markdown code blocks)
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const results = JSON.parse(jsonMatch[0]);
+        results.forEach(r => {
+          if (r.relevant === true) {
+            relevantArticles.push(batch[r.id]);
+          }
+        });
+      }
+    } catch (err) {
+      console.error(`  ⚠️  GPT Romania check failed for batch ${i}:`, err.message);
+      // Fallback: include all articles from failed batch
+      relevantArticles.push(...batch);
+    }
+    
+    // Small delay to avoid rate limiting
+    if (i + BATCH_SIZE < articles.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+  
+  console.log(`  ✓ ${relevantArticles.length}/${articles.length} articles are Romania-relevant`);
+  return relevantArticles;
 }
 
 function filterByKeywords(articles, entityName) {
   const keywords = QUERIES[entityName] || [];
   return articles
-    .filter(isAboutRomania)
     .filter(article => {
       const text = `${article.title} ${article.snippet}`.toLowerCase();
       return keywords.some(kw => text.includes(kw.toLowerCase()));
@@ -228,17 +314,12 @@ async function generateTitleSummary(articles) {
     source: a.source,
   }));
   
-  const prompt = `Analizează acest grup de articole (care sunt despre ACELAȘI subiect) și creează:
-1. TITLU: Un titlu scurt, informativ, jurnalistic (max 10 cuvinte).
-2. SUMAR: Un sumar obiectiv de max 25 cuvinte.
-3. CONTEXT: O propoziție scurtă de context ("Vine după...", "În contextul..."). Dacă nu e clar, scrie "N/A".
-4. SENTIMENT: <pozitiv|negativ|neutru|controversat>
-
-Format răspuns strict:
-TITLU: ...
-SUMAR: ...
-CONTEXT: ...
-SENTIMENT: ...
+  // CHANGED: Simplified prompt for low verbosity
+  const prompt = `Analizează articolele (ACELAȘI subiect). Creează:
+TITLU: max 10 cuvinte
+SUMAR: max 25 cuvinte, obiectiv
+CONTEXT: o propoziție scurtă sau "N/A"
+SENTIMENT: pozitiv|negativ|neutru|controversat
 
 Articole:
 ${JSON.stringify(payload, null, 2)}`;
@@ -247,7 +328,7 @@ ${JSON.stringify(payload, null, 2)}`;
     const response = await openai.chat.completions.create({
       model: CONFIG.model,
       messages: [
-        { role: "system", content: "Ești un editor de știri experimentat. Răspunde în română." },
+        { role: "system", content: "Editor de știri. Răspunde concis în română." },
         { role: "user", content: prompt },
       ],
       temperature: 0.3,
@@ -284,10 +365,10 @@ function pickBestThumbnail(items) {
 
 /** Main Report Builder */
 async function buildReport() {
-  console.log("\n🚀 Starting report generation (Logic V2)...\n");
+  console.log("\n🚀 Starting report generation (Logic V3 - GPT 5.2)...\n");
   
   const today = new Date().toLocaleDateString("ro-RO").replaceAll(".", "-");
-  const cacheFile = path.join(CONFIG.cacheDir, `report-v2-${today}.json`);
+  const cacheFile = path.join(CONFIG.cacheDir, `report-v3-${today}.json`);
   
   await fs.promises.mkdir(CONFIG.cacheDir, { recursive: true });
   
@@ -297,6 +378,9 @@ async function buildReport() {
   allArticles = deduplicateByUrl(allArticles);
   
   console.log(`✓ Fetched ${allArticles.length} recent articles.`);
+
+  // CHANGED: Step 3 is now GPT-based Romania relevance check
+  allArticles = await checkRomaniaRelevance(allArticles);
 
   const usedUrls = new Set();
   const entitiesOutput = [];
@@ -324,7 +408,8 @@ async function buildReport() {
     for (const cluster of rawClusters) {
       const maxCred = Math.max(...cluster.map(c => c.credibility));
       
-      if (cluster.length < 2 && maxCred < 0.8) continue; 
+      // CHANGED: maxCred threshold from 0.8 to 0.5
+      if (cluster.length < 2 && maxCred < 0.5) continue; 
 
       const items = cluster.slice(0, 5);
       
@@ -376,7 +461,9 @@ async function buildReport() {
 
   for (const cluster of leftoverClusters) {
     const maxCred = Math.max(...cluster.map(c => c.credibility));
-    if (cluster.length < 2 && maxCred < 0.9) continue;
+    
+    // CHANGED: maxCred threshold from 0.9 to 0.4
+    if (cluster.length < 2 && maxCred < 0.4) continue;
 
     const items = cluster;
     const uniqueSources = new Set(items.map(it => domainOf(it.link))).size;
