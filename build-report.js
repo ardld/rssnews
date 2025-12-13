@@ -122,7 +122,31 @@ function getTokens(text) {
     .toLowerCase()
     .replace(/[^\w\săîâșț]/g, "")
     .split(/\s+/)
+    .map(w => stemRomanian(w)) // Apply basic stemming
     .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+}
+
+/** Basic Romanian stemming - removes common suffixes */
+function stemRomanian(word) {
+  // Remove common Romanian suffixes to normalize word forms
+  const suffixes = [
+    'ului', 'ului', 'elor', 'ilor', 'ații', 'ația', 'ație',
+    'urilor', 'ilor', 'lor', 'ele', 'ele', 'ii', 'ei', 'ul', 'ua', 'ea',
+    'ă', 'e', 'i', 'u', 'a'
+  ];
+  
+  let stem = word.toLowerCase();
+  
+  // Only stem words longer than 4 characters
+  if (stem.length <= 4) return stem;
+  
+  for (const suffix of suffixes) {
+    if (stem.endsWith(suffix) && stem.length - suffix.length >= 3) {
+      return stem.slice(0, -suffix.length);
+    }
+  }
+  
+  return stem;
 }
 
 function calculateSimilarity(str1, str2) {
@@ -137,6 +161,18 @@ function calculateSimilarity(str1, str2) {
   return intersection.size / union.size;
 }
 
+/** Clean GPT output - remove markdown artifacts */
+function cleanGPTOutput(text) {
+  if (!text) return "";
+  return text
+    .replace(/\*\*/g, '')      // Remove bold **
+    .replace(/\*/g, '')        // Remove italic *
+    .replace(/^#+\s*/gm, '')   // Remove headers #
+    .replace(/`/g, '')         // Remove code backticks
+    .replace(/\n+/g, ' ')      // Collapse newlines
+    .trim();
+}
+
 /** Group articles by Topic Similarity */
 function clusterBySimilarity(articles) {
   const clusters = [];
@@ -148,15 +184,19 @@ function clusterBySimilarity(articles) {
 
     for (let i = 0; i < clusters.length; i++) {
       const cluster = clusters[i];
-      const sim = calculateSimilarity(article.title, cluster[0].title);
       
-      if (sim > bestSimilarity) {
-        bestSimilarity = sim;
-        bestClusterIndex = i;
+      // Compare against ALL articles in cluster, take the max similarity
+      for (const clusterArticle of cluster) {
+        const sim = calculateSimilarity(article.title, clusterArticle.title);
+        if (sim > bestSimilarity) {
+          bestSimilarity = sim;
+          bestClusterIndex = i;
+        }
       }
     }
 
-    if (bestSimilarity >= 0.20 && bestClusterIndex !== -1) {
+    // Lowered threshold from 0.20 to 0.15 for better grouping
+    if (bestSimilarity >= 0.15 && bestClusterIndex !== -1) {
       clusters[bestClusterIndex].push(article);
     } else {
       clusters.push([article]);
@@ -394,16 +434,16 @@ ${JSON.stringify(payload, null, 2)}`;
     const response = await openai.chat.completions.create({
       model: CONFIG.model,
       messages: [
-        { role: "system", content: "Editor de știri. Răspunde concis în română." },
+        { role: "system", content: "Editor de știri. Răspunde concis în română. NU folosi markdown (fără **, #, `, etc)." },
         { role: "user", content: prompt },
       ],
       temperature: 0.3,
     });
     
     const content = response.choices[0].message.content;
-    const title = content.match(/TITLU:\s*(.+)/)?.[1]?.trim() || sorted[0].title;
-    const summary = content.match(/SUMAR:\s*(.+)/)?.[1]?.trim() || "";
-    const context = content.match(/CONTEXT:\s*(.+)/)?.[1]?.trim() || "";
+    const title = cleanGPTOutput(content.match(/TITLU:\s*(.+)/)?.[1]) || sorted[0].title;
+    const summary = cleanGPTOutput(content.match(/SUMAR:\s*(.+)/)?.[1]) || "";
+    const context = cleanGPTOutput(content.match(/CONTEXT:\s*(.+)/)?.[1]) || "";
     const sentiment = content.match(/SENTIMENT:\s*(\w+)/)?.[1]?.trim() || "neutral";
     
     return { 
