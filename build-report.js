@@ -26,6 +26,7 @@ const CONFIG = {
     "https://adevarul.ro/rss/index",
   ],
   sourceCredibility: {
+    "news.yam.ro": 0.5,
     "recorder.ro": 1.0,
     "pressone.ro": 1.0,
     "g4media.ro": 0.9,
