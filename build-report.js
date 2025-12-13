@@ -184,18 +184,11 @@ async function fetchRSS() {
 }
 
 const ROMANIA_SIGNALS = [
-  "românia", "romania", "românesc", "romanesc", "bucuresti", "bucurești",
-  "cluj", "timișoara", "timisoara", "iași", "iasi", "constanța", "constanta",
-  "brașov", "brasov", "sibiu", "craiova", "galați", "galati", "ploiești", "ploiesti",
-  "ciolacu", "ciucă", "iohannis", "simion", "sosoaca", "lasconi", "geoana", "bolojan"
+  "românia", "romania", "românesc", "romanesc"
 ];
 
 const IRRELEVANT_SIGNALS = [
-  "budapesta", "ungaria", "maghiar", "orban viktor",
-  "venezuela", "machado", "oslo", "veneția", "rialto",
-  "tezaur", "colosseum mall", "inaugurare", "oferte speciale",
-  "edituri", "manuale", "academiei române", "ioan-aurel pop",
-  "horoscop", "meteo", "sport", "fotbal", "simona halep"
+  "horoscop", "meteo", "sport", "fotbal"
 ];
 
 function isAboutRomania(article) {
