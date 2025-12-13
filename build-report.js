@@ -727,57 +727,250 @@ function generateHTML(report) {
     timeStyle: "short",
   });
   
+  // BEGIN IMPROVED CSS
+  const improvedCSS = `
+    :root {
+      --ink: #1e293b; /* Darker ink */
+      --bg: #f8fafc; /* Light grey background */
+      --muted: #64748b; /* Slate grey muted text */
+      --line: #e2e8f0; /* Light border color */
+      --accent: #005a95; /* Deep Blue (original) */
+      --accent-ink: #fff;
+      --popular: #ef4444; /* Red for popular/viral */
+      --font-base: Inter, sans-serif;
+      --font-headline: 'Space Grotesk', sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { 
+      font-family: var(--font-base); 
+      color: var(--ink); 
+      background: var(--bg); 
+      line-height: 1.6;
+    }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+    
+    /* Header (for generated time) */
+    .report-header {
+      margin-bottom: 40px;
+      text-align: center;
+    }
+    .report-header h1 {
+      font: 800 32px/1.2 var(--font-headline);
+      color: var(--accent);
+      margin: 0 0 8px;
+    }
+    .report-header p {
+      font-size: 14px;
+      color: var(--muted);
+      margin: 0;
+    }
+    
+    /* Entity Title */
+    .entity { margin: 40px 0 32px; }
+    .entity__t {
+      display: inline-block;
+      background: var(--accent);
+      color: var(--accent-ink);
+      padding: 8px 16px;
+      font: 800 18px/1 var(--font-headline); /* Slightly larger */
+      text-transform: uppercase;
+      margin: 0 0 24px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    
+    /* Main Card */
+    .card {
+      background: #fff; /* White background for cards */
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px; /* More padding */
+      margin: 0 0 24px;
+      display: grid;
+      grid-template-columns: 1fr 240px; /* Wider thumbnail column */
+      gap: 32px; /* More space */
+      align-items: center;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05); /* Subtle shadow */
+    }
+    .card--no-thumb { grid-template-columns: 1fr; }
+    .card__body { min-width: 0; }
+    
+    .card__head {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin: 0 0 12px;
+    }
+    .card__t {
+      font: 800 28px/1.2 var(--font-headline); /* Larger title */
+      margin: 0;
+      flex: 1;
+      color: var(--ink);
+    }
+    
+    .card__meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 0 0 16px; /* More margin */
+    }
+    .badge {
+      font-size: 12px; /* Slightly larger badge */
+      padding: 4px 10px;
+      border-radius: 9999px; /* Pill shape */
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      line-height: 1;
+    }
+    .badge--popular { 
+      background: var(--popular); 
+      color: var(--accent-ink);
+    }
+    .badge--sources { 
+      background: #e0f2fe; /* Light blue */
+      color: #0c4a6e; /* Darker blue text */
+      font-weight: 600;
+    }
+    
+    .card__thumb {
+      width: 240px; /* Wider thumbnail */
+      height: 150px;
+      object-fit: cover;
+      border-radius: 6px; /* Slightly rounder corners */
+      border: none;
+    }
+    
+    .sub__context {
+      font-size: 15px;
+      color: var(--muted);
+      margin: 0 0 10px;
+      font-style: italic;
+      border-left: 3px solid #fcd34d; /* Yellow context line */
+      padding-left: 12px;
+    }
+    .sub__sum {
+      font-size: 17px; /* Larger summary text */
+      color: var(--ink);
+      margin: 0 0 20px;
+      line-height: 1.5;
+      font-weight: 500;
+    }
+    
+    /* Linked Articles List */
+    .items {
+      margin: 20px 0 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px dashed var(--line);
+      padding-top: 15px;
+    }
+    .items li {
+      margin: 8px 0;
+      font-size: 14px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .items a {
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 400;
+      transition: color 0.2s;
+    }
+    .items a:hover {
+      color: var(--accent);
+    }
+    .src {
+      font-size: 11px;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .more-sources {
+      font-size: 13px;
+      color: var(--muted);
+      margin: 12px 0 0;
+      font-style: italic;
+    }
+    
+    /* Other News Section */
+    .other-news {
+      margin: 40px 0;
+      padding: 32px;
+      background: #eef2ff; /* Very light blue background */
+      border-radius: 8px;
+      border: 1px solid #c7d2fe;
+    }
+    .other-news__t {
+      font: 800 24px/1.2 var(--font-headline);
+      margin: 0 0 24px;
+      color: #1e40af; /* Darker blue */
+    }
+    .other-news__item {
+      margin: 0; /* Remove margin */
+      padding: 16px 0; /* More vertical padding */
+      border-bottom: 1px solid #dbeafe; /* Light blue line */
+      display: grid;
+      grid-template-columns: 1fr 100px; /* Slightly larger thumbnail for other news */
+      gap: 20px;
+      align-items: center;
+    }
+    .other-news__item--no-thumb { grid-template-columns: 1fr; }
+    .other-news__item:last-child { border-bottom: none; }
+    .other-news__link {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .other-news__link:hover {
+      color: var(--accent);
+    }
+    .other-news__thumb {
+      width: 100px; /* Thumbnail width */
+      height: 60px; /* Thumbnail height */
+      object-fit: cover;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    
+    /* Responsive adjustments */
+    @media(max-width:900px){
+      .card { grid-template-columns: 1fr; }
+      .card__thumb { width: 100%; height: 220px; order: -1; }
+      .card__t { font-size: 24px; }
+      .wrap { padding: 20px 15px; }
+    }
+    @media(max-width:500px){
+      .other-news__item { grid-template-columns: 1fr; }
+      .other-news__thumb { width: 100%; height: 120px; order: -1; }
+      .other-news { padding: 20px; }
+    }
+  `;
+  // END IMPROVED CSS
+
   return `<!doctype html>
 <html lang="ro">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CONTEXTPOLITIC.ro – ${he.encode(when)}</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700;800&display=swap" rel="stylesheet">
 <style>
-:root{--ink:#1a1a1a;--bg:#fff;--muted:#6b7280;--line:#e5e7eb;--accent:#005a95;--accent-ink:#fff;--popular:#dc2626}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0}
-body{font-family:Inter,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6}
-.wrap{max-width:1200px;margin:0 auto;padding:40px 20px}
-.entity{margin:40px 0 32px}
-.entity__t{display:inline-block;background:var(--accent);color:var(--accent-ink);padding:8px 16px;font:800 16px/1 Space Grotesk,sans-serif;text-transform:uppercase;margin:0 0 16px;border-radius:4px}
-.card{border-bottom:1px solid var(--line);padding:24px 0;margin:0 0 16px;display:grid;grid-template-columns:1fr 200px;gap:24px;align-items:start}
-.card--no-thumb{grid-template-columns:1fr}
-.card__body{min-width:0}
-.card__head{display:flex;align-items:flex-start;gap:12px;margin:0 0 12px}
-.card__t{font:800 24px/1.2 Space Grotesk,sans-serif;margin:0;flex:1}
-.card__meta{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
-.badge{font-size:11px;padding:3px 8px;border-radius:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
-.badge--popular{background:var(--popular);color:#fff}
-.badge--sources{background:#dbeafe;color:#1e40af}
-.card__thumb{width:200px;height:120px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
-.sub__context{font-size:14px;color:var(--muted);margin:0 0 8px;font-style:italic}
-.sub__sum{font-size:16px;color:var(--ink);margin:0 0 12px;line-height:1.5}
-.items{margin:0;padding:0;list-style:none}
-.items li{margin:8px 0;font-size:14px;display:flex;gap:8px}
-.items a{color:inherit;text-decoration:none;border-bottom:1px solid rgba(10,10,10,.1)}
-.items a:hover{border-bottom-color:var(--accent)}
-.src{font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;color:var(--muted)}
-.more-sources{font-size:13px;color:var(--muted);margin:8px 0 0;font-style:italic}
-.other-news{margin:40px 0;padding:24px;background:#f9fafb;border-radius:8px}
-.other-news__t{font:800 20px/1.2 Space Grotesk,sans-serif;margin:0 0 16px}
-.other-news__item{margin:12px 0;padding:12px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr 80px;gap:16px;align-items:center}
-.other-news__item--no-thumb{grid-template-columns:1fr}
-.other-news__item:last-child{border:none}
-.other-news__link{font-size:15px;font-weight:600;color:var(--ink);text-decoration:none;border-bottom:1px solid rgba(10,10,10,.1)}
-.other-news__link:hover{border-bottom-color:var(--accent)}
-.other-news__thumb{width:80px;height:50px;object-fit:cover;border-radius:4px}
-@media(max-width:768px){
-  .card{grid-template-columns:1fr}
-  .card__thumb{width:100%;height:200px;order:-1}
-  .other-news__item{grid-template-columns:1fr}
-  .other-news__thumb{width:100%;height:120px;order:-1}
-}
+${improvedCSS}
 </style>
 </head>
 <body>
 <main class="wrap">
+  <header class="report-header">
+    <h1>CONTEXTPOLITIC.ro</h1>
+    <p>Sinteză politică generată automat la ${he.encode(when)}</p>
+  </header>
   <div id="content"></div>
 </main>
 <script>
@@ -789,28 +982,41 @@ const fmtDomain=u=>{try{return new URL(u).hostname.replace(/^www\\./,"")}catch{r
 const entitiesHTML=data.entities.map(e=>{
   if(!e.subjects.length)return "";
   const cards=e.subjects.map(s=>{
+    // Calculate additional items (articles that were clustered but not chosen for the top 5 display)
+    const additionalItems = s.articleCount > s.items.length ? s.articleCount - s.items.length : 0;
+
     const items=s.items.map(it=>
       \`<li><a href="\${it.link}" target="_blank">\${it.title}</a><span class="src">\${fmtDomain(it.link)}</span></li>\`
     ).join("");
-    const moreSources=s.additionalItems>0?\`<div class="more-sources">+\${s.additionalItems} mai multe surse</div>\`:"";
+    const moreSources=additionalItems>0?\`<div class="more-sources">Știrea e acoperită de încă \${additionalItems} surse similare.</div>\`:"";
     const ctx=s.context_ro?\`<p class="sub__context">\${s.context_ro}</p>\`:"";
     const sum=s.sumar_ro?\`<p class="sub__sum">\${s.sumar_ro}</p>\`:"";
-    const popularBadge=s.isViral?\`<span class="badge badge--popular">POPULAR</span>\`:"";
-    const thumb=s.thumbnail?\`<img src="\${s.thumbnail}" alt="" class="card__thumb" loading="lazy" onerror="this.style.display='none'"/>\`:"";
+    const popularBadge=s.isViral?\`<span class="badge badge--popular">VIRAL</span>\`:"";
+    const thumb=s.thumbnail?\`<img src="\${it.thumbnail}" alt="" class="card__thumb" loading="lazy" onerror="this.style.display='none'"/>\`:"";
     const cardClass=s.thumbnail?"card":"card card--no-thumb";
-    const sourcesLabel=s.sourceDiversity===1?"1 sursă":\`\${s.sourceDiversity} surse\`;
+    const sourcesLabel=s.sourceDiversity===1?"1 SURSĂ":\`\${s.sourceDiversity} SURSE\`;
     const meta=\`<div class="card__meta">
       \${popularBadge}
       <span class="badge badge--sources">\${sourcesLabel}</span>
     </div>\`;
-    return\`<div class="\${cardClass}">
+    
+    // Pick the best thumbnail from all items in the cluster
+    const bestThumbnail = data.entities.find(en => en.name === e.name)
+      .articles
+      .filter(a => s.items.map(it => it.link).includes(a.link))
+      .find(a => a.thumbnail)?.thumbnail;
+
+    const finalThumb = bestThumbnail ? \`<img src="\${bestThumbnail}" alt="" class="card__thumb" loading="lazy" onerror="this.style.display='none'"/>\` : "";
+    const finalCardClass = bestThumbnail ? "card" : "card card--no-thumb";
+
+    return\`<div class="\${finalCardClass}">
       <div class="card__body">
         <div class="card__head"><h3 class="card__t">\${s.titlu_ro||s.label}</h3></div>
         \${meta}\${ctx}\${sum}
         <ul class="items">\${items}</ul>
         \${moreSources}
       </div>
-      \${thumb}
+      \${finalThumb}
     </div>\`;
   }).join("");
   return\`<section class="entity"><h2 class="entity__t">\${e.name}</h2>\${cards}</section>\`;
@@ -819,7 +1025,7 @@ const entitiesHTML=data.entities.map(e=>{
 // Render other news
 const otherNewsHTML=data.otherNews&&data.otherNews.length?\`
   <div class="other-news">
-    <h2 class="other-news__t">Alte Știri de Interes</h2>
+    <h2 class="other-news__t">Alte Știri de Interes (Viral)</h2>
     \${data.otherNews.map(item=>{
       const thumb=item.thumbnail?\`<img src="\${item.thumbnail}" alt="" class="other-news__thumb" loading="lazy" onerror="this.style.display='none'"/>\`:"";
       const itemClass=item.thumbnail?"other-news__item":"other-news__item other-news__item--no-thumb";
