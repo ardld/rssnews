@@ -7,7 +7,7 @@ import Parser from "rss-parser";
 /** Configuration */
 const CONFIG = {
   openaiKey: process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || "",
-  model: "gpt-5.2",  // CHANGED: Updated to GPT 5.2
+  model: "gpt-5.2",
   outDir: path.join(process.cwd(), "public"),
   cacheDir: path.join(process.cwd(), ".cache"),
   timezone: "Europe/Bucharest",
@@ -44,59 +44,39 @@ const CONFIG = {
 const openai = new OpenAI({ apiKey: CONFIG.openaiKey });
 const parser = new Parser();
 
-/** Entity definitions */
+/** Entity definitions with descriptions for GPT classification */
 const ENTITIES = [
-  "Președinție",
-  "Guvern",
-  "Parlament",
-  "Coaliție (Putere)",
-  "Opoziție",
-  "Local (Primării)",
+  {
+    name: "Președinție",
+    description: "Articole despre Președintele României (Nicușor Dan), Administrația Prezidențială, Palatul Cotroceni, decrete prezidențiale, sau activitatea oficială a președintelui.",
+    keywords: ["Nicușor Dan", "Administrația Prezidențială", "Cotroceni", "președintele", "decret prezidențial"]
+  },
+  {
+    name: "Guvern",
+    description: "Articole despre Guvernul României, Premierul Ilie Bolojan, Palatul Victoria, miniștri, ministere, ordonanțe de urgență (OUG), decizii guvernamentale. Miniștrii actuali: Marian Neacșu, Cătălin Predoiu, Ionuț Moșteanu, Tanczos Barna, Dragoș Anastasiu, Alexandru Nazare, Radu Marinescu, Ciprian Șerban, Alexandru Rogobete, Oana Țoiu, Daniel David, Cseke Attila, Florin Barbu, Bogdan Ivan, Diana Buzoianu, Florin Petre Manole, Dragoș Pîslaru, Mihai Jurca.",
+    keywords: ["Guvernul", "Premierul", "Bolojan", "Palatul Victoria", "executivul", "ministru", "minister", "OUG"]
+  },
+  {
+    name: "Parlament",
+    description: "Articole despre activitatea Parlamentului României, Camera Deputaților, Senat, legi votate în plen, dezbateri parlamentare, comisii parlamentare, deputați și senatori în funcția lor legislativă.",
+    keywords: ["Parlamentul", "Camera Deputaților", "Senatul", "plen", "legislativ", "deputat", "senator", "lege votată"]
+  },
+  {
+    name: "Coaliție (Putere)",
+    description: "Articole despre partidele din coaliția de guvernare (PSD, PNL, USR, UDMR) - decizii de partid, conflicte interne, negocieri politice, declarații ale liderilor de partid în context politic.",
+    keywords: ["PSD", "PNL", "USR", "UDMR", "coaliția", "coaliție"]
+  },
+  {
+    name: "Opoziție",
+    description: "Articole PRIMORDIAL despre partidele de opoziție sau liderii lor: AUR, George Simion, SOS România, Diana Șoșoacă, Partidul POT, Călin Georgescu. Articolul trebuie să fie DESPRE opoziție, nu doar să menționeze aceste nume în treacăt.",
+    keywords: ["AUR", "Simion", "SOS România", "Șoșoacă", "Partidul POT", "Călin Georgescu"]
+  },
+  {
+    name: "Local (Primării)",
+    description: "Articole despre administrația locală: primari, primării, consilii locale, decizii ale autorităților locale din orașe și comune.",
+    keywords: ["primar", "primăria", "consiliul local", "administrație locală"]
+  },
 ];
-
-// CHANGED: Expanded keyword lists
-const QUERIES = {
-  "Președinție": ["Nicușor Dan", "Administrația Prezidențială", "Iohannis", "Cotroceni", "Lasconi", "Geoana"],
-  
-  // CHANGED: Added "executivul", "palatul victoria", and all current ministers from Guvernul Bolojan
-  "Guvern": [
-    "Guvernul", "Premierul", "Bolojan", "Ministrul", "Ministerul", "OUG",
-    "executivul", "Palatul Victoria",
-    // Vicepremieri
-    "Marian Neacșu", "Neacșu",
-    "Cătălin Predoiu", "Predoiu",
-    "Ionuț Moșteanu", "Moșteanu",
-    "Tanczos Barna", "Barna",
-    "Dragoș Anastasiu", "Anastasiu",
-    // Miniștri
-    "Alexandru Nazare", "Nazare",
-    "Radu Marinescu", "Marinescu",
-    "Ciprian Șerban",
-    "Alexandru Rogobete", "Rogobete",
-    "Oana Țoiu", "Țoiu",
-    "Daniel David",
-    "Cseke Attila", "Cseke",
-    "Florin Barbu",
-    "Bogdan Ivan",
-    "Diana Buzoianu", "Buzoianu",
-    "Florin Petre Manole", "Manole",
-    "Dragoș Pîslaru", "Pîslaru",
-    "Mihai Jurca", "Jurca"
-  ],
-  
-  // CHANGED: Added expanded parliament keywords
-  "Parlament": [
-    "Parlamentul", "Camera Deputaților", "Senatul", "Senator", "Deputat", "Plen", "Legislativ",
-    "parlamentarul", "parlamentarii",
-    "deputatul", "deputatii", "deputații", "deputata",
-    "senatorul", "senatoarea", "senatorii",
-    "votul in plen", "votul în plen"
-  ],
-  
-  "Coaliție (Putere)": ["PSD", "PNL", "UDMR", "USR", "Coaliția"],
-  "Opoziție": ["AUR", "Simion", "SOS România", "Șoșoacă", "Sosoaca", "Partidul POT", "Călin Georgescu"],
-  "Local (Primării)": ["primar", "primăria", "consiliul local", "administrație locală"],
-};
 
 /** STOP WORDS ROMANIAN */
 const STOP_WORDS = new Set([
@@ -218,7 +198,6 @@ async function fetchRSS() {
   return enriched;
 }
 
-// CHANGED: Replaced hardcoded Romania filter with GPT call
 /** GPT-based Romania Relevance Check */
 async function checkRomaniaRelevance(articles) {
   console.log(`🇷🇴 Checking Romania relevance for ${articles.length} articles via GPT...`);
@@ -253,12 +232,9 @@ ${JSON.stringify(payload, null, 2)}`;
           { role: "user", content: prompt },
         ],
         temperature: 0.1,
-        // CHANGED: Low reasoning, low verbosity settings for GPT 5.2
-        // These are applied via system prompt and temperature
       });
       
       const content = response.choices[0].message.content;
-      // Parse JSON from response (handle potential markdown code blocks)
       const jsonMatch = content.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         const results = JSON.parse(jsonMatch[0]);
@@ -284,13 +260,104 @@ ${JSON.stringify(payload, null, 2)}`;
   return relevantArticles;
 }
 
-function filterByKeywords(articles, entityName) {
-  const keywords = QUERIES[entityName] || [];
-  return articles
-    .filter(article => {
-      const text = `${article.title} ${article.snippet}`.toLowerCase();
-      return keywords.some(kw => text.includes(kw.toLowerCase()));
-    });
+/** GPT-based Entity Classification - classifies articles by PRIMARY topic */
+async function classifyArticlesByEntity(articles) {
+  console.log(`🏷️  Classifying ${articles.length} articles by political entity via GPT...`);
+  
+  // Build entity descriptions for the prompt
+  const entityDescriptions = ENTITIES.map((e, idx) => 
+    `${idx + 1}. ${e.name}: ${e.description}`
+  ).join("\n");
+  
+  const BATCH_SIZE = 15;
+  const classified = {}; // { entityName: [articles] }
+  const unclassified = [];
+  
+  // Initialize
+  ENTITIES.forEach(e => classified[e.name] = []);
+  
+  for (let i = 0; i < articles.length; i += BATCH_SIZE) {
+    const batch = articles.slice(i, i + BATCH_SIZE);
+    
+    const payload = batch.map((a, idx) => ({
+      id: idx,
+      title: a.title,
+      snippet: a.snippet.slice(0, 150),
+    }));
+    
+    const prompt = `Clasifică fiecare articol în UNA dintre categoriile politice de mai jos, bazat pe SUBIECTUL PRINCIPAL al articolului.
+
+IMPORTANT: 
+- Alege categoria doar dacă articolul este PRIMORDIAL despre acel subiect
+- Dacă articolul doar MENȚIONEAZĂ un politician sau partid, dar nu este despre ei, NU îl clasifica acolo
+- Dacă articolul nu se potrivește clar în nicio categorie politică, răspunde "none"
+
+Categorii:
+${entityDescriptions}
+
+Pentru fiecare articol, răspunde cu JSON: {"id": number, "category": "numele categoriei" sau "none"}
+
+Articole:
+${JSON.stringify(payload, null, 2)}
+
+Răspunde DOAR cu un array JSON valid.`;
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: CONFIG.model,
+        messages: [
+          { 
+            role: "system", 
+            content: "Ești un clasificator de știri politice. Fii precis și concis. Output doar JSON valid." 
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.1,
+      });
+      
+      const content = response.choices[0].message.content;
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      
+      if (jsonMatch) {
+        const results = JSON.parse(jsonMatch[0]);
+        results.forEach(r => {
+          const article = batch[r.id];
+          if (!article) return;
+          
+          const categoryName = r.category;
+          
+          if (categoryName && categoryName !== "none" && classified[categoryName]) {
+            classified[categoryName].push(article);
+          } else {
+            unclassified.push(article);
+          }
+        });
+      } else {
+        // If parsing fails, add to unclassified
+        unclassified.push(...batch);
+      }
+    } catch (err) {
+      console.error(`  ⚠️  GPT classification failed for batch ${i}:`, err.message);
+      unclassified.push(...batch);
+    }
+    
+    // Progress indicator
+    const progress = Math.min(i + BATCH_SIZE, articles.length);
+    console.log(`  → Classified ${progress}/${articles.length} articles...`);
+    
+    // Small delay to avoid rate limiting
+    if (i + BATCH_SIZE < articles.length) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  
+  // Log results
+  ENTITIES.forEach(e => {
+    console.log(`  ✓ ${e.name}: ${classified[e.name].length} articles`);
+  });
+  console.log(`  ○ Unclassified: ${unclassified.length} articles`);
+  
+  return { classified, unclassified };
 }
 
 function deduplicateByUrl(articles) {
@@ -314,7 +381,6 @@ async function generateTitleSummary(articles) {
     source: a.source,
   }));
   
-  // CHANGED: Simplified prompt for low verbosity
   const prompt = `Analizează articolele (ACELAȘI subiect). Creează:
 TITLU: max 10 cuvinte
 SUMAR: max 25 cuvinte, obiectiv
@@ -365,7 +431,7 @@ function pickBestThumbnail(items) {
 
 /** Main Report Builder */
 async function buildReport() {
-  console.log("\n🚀 Starting report generation (Logic V3 - GPT 5.2)...\n");
+  console.log("\n🚀 Starting report generation (Logic V3 - GPT Classification)...\n");
   
   const today = new Date().toLocaleDateString("ro-RO").replaceAll(".", "-");
   const cacheFile = path.join(CONFIG.cacheDir, `report-v3-${today}.json`);
@@ -377,38 +443,43 @@ async function buildReport() {
   allArticles = allArticles.filter(a => withinLast24h(a.date));
   allArticles = deduplicateByUrl(allArticles);
   
-  console.log(`✓ Fetched ${allArticles.length} recent articles.`);
+  console.log(`✓ Fetched ${allArticles.length} recent articles.\n`);
 
-  // CHANGED: Step 3 is now GPT-based Romania relevance check
+  // 2. GPT-based Romania relevance check
   allArticles = await checkRomaniaRelevance(allArticles);
+  
+  // 3. GPT-based entity classification
+  const { classified, unclassified } = await classifyArticlesByEntity(allArticles);
 
   const usedUrls = new Set();
   const entitiesOutput = [];
   const allUsedSources = new Set();
 
-  // 2. Process Entities
-  for (const entityName of ENTITIES) {
-    console.log(`\n📂 Processing: ${entityName}`);
+  // 4. Process each entity
+  for (const entity of ENTITIES) {
+    console.log(`\n📂 Processing: ${entity.name}`);
     
-    // a. Filter strictly by keywords
-    let entityArticles = filterByKeywords(allArticles, entityName);
+    let entityArticles = classified[entity.name] || [];
     
-    // b. IMPORTANT: Remove articles already used in previous entities
+    // Remove articles already used in previous entities (shouldn't happen with GPT classification, but safety check)
     entityArticles = entityArticles.filter(a => !usedUrls.has(a.link));
 
-    if (entityArticles.length === 0) continue;
+    if (entityArticles.length === 0) {
+      console.log(`   → No articles found.`);
+      continue;
+    }
 
-    // c. CLUSTER BY SIMILARITY
+    // Cluster by similarity
     const rawClusters = clusterBySimilarity(entityArticles);
-    console.log(`   → Found ${rawClusters.length} raw clusters (topics).`);
+    console.log(`   → Found ${rawClusters.length} topic clusters.`);
 
     const subjects = [];
 
-    // d. Process each cluster
+    // Process each cluster
     for (const cluster of rawClusters) {
       const maxCred = Math.max(...cluster.map(c => c.credibility));
       
-      // CHANGED: maxCred threshold from 0.8 to 0.5
+      // Filter: require 2+ articles OR high credibility source
       if (cluster.length < 2 && maxCred < 0.5) continue; 
 
       const items = cluster.slice(0, 5);
@@ -425,7 +496,6 @@ async function buildReport() {
 
       const meta = await generateTitleSummary(items);
       
-      // Get the first (most credible) article's link for the main link
       const primaryLink = items[0]?.link || "";
       
       subjects.push({
@@ -447,14 +517,21 @@ async function buildReport() {
     const finalSubjects = subjects.slice(0, 6);
 
     if (finalSubjects.length > 0) {
-      entitiesOutput.push({ name: entityName, subjects: finalSubjects });
+      entitiesOutput.push({ name: entity.name, subjects: finalSubjects });
     }
   }
 
-  // 3. Collect "Alte Știri" (Other News)
+  // 5. Collect "Alte Știri" (Other News) from unclassified articles
   console.log("\n📰 Collecting Other News...");
   
-  let leftovers = allArticles.filter(a => !usedUrls.has(a.link));
+  // Combine unclassified with any leftover classified articles not yet used
+  let leftovers = [
+    ...unclassified.filter(a => !usedUrls.has(a.link)),
+    ...allArticles.filter(a => !usedUrls.has(a.link))
+  ];
+  
+  // Dedupe leftovers
+  leftovers = deduplicateByUrl(leftovers);
   
   const leftoverClusters = clusterBySimilarity(leftovers);
   const otherNewsCandidates = [];
@@ -462,7 +539,6 @@ async function buildReport() {
   for (const cluster of leftoverClusters) {
     const maxCred = Math.max(...cluster.map(c => c.credibility));
     
-    // CHANGED: maxCred threshold from 0.9 to 0.4
     if (cluster.length < 2 && maxCred < 0.4) continue;
 
     const items = cluster;
