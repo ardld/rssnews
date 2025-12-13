@@ -12,6 +12,7 @@ const CONFIG = {
   cacheDir: path.join(process.cwd(), ".cache"),
   timezone: "Europe/Bucharest",
   feeds: [
+    "https://news.yam.ro/ro/rss",
     "https://www.biziday.ro/feed/",
     "https://b365.ro/feed/",
     "https://www.digi24.ro/rss",
